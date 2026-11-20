@@ -51,9 +51,10 @@ html[data-theme="dark"] {
   --cp-highlight: rgba(253, 142, 161, 0.12);
 }
 @font-face { font-family: "Krona One"; src: url("/fonts/krona-one.ttf") format("truetype"); font-style: normal; font-weight: 400; font-display: swap; }
+@font-face { font-family: "Inter"; src: url("/fonts/inter-variable.woff2") format("woff2"); font-style: normal; font-weight: 100 900; font-display: swap; }
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
-body { margin: 0; min-width: 320px; background: var(--cp-bg); color: var(--cp-text); font-family: "Segoe UI", Aptos, Calibri, -apple-system, BlinkMacSystemFont, sans-serif; font-size: 15px; line-height: 1.6; }
+body { margin: 0; min-width: 320px; background: var(--cp-bg); color: var(--cp-text); font-family: "Inter", "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif; font-size: 15px; line-height: 1.6; }
 body:has(.fireside-surface) { background: var(--cp-surface); }
 html[data-theme="dark"] .fireside-surface { --cp-accent: var(--cp-warning); --cp-accent-hover: var(--cp-warning); --cp-accent-fg: var(--cp-surface); --cp-accent-soft: var(--cp-surface-soft); --cp-highlight: var(--cp-border-strong); }
 html { scrollbar-color: var(--cp-border-strong) var(--cp-surface); }

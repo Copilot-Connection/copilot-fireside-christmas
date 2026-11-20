@@ -30,3 +30,10 @@ Source: https://fonts.google.com/specimen/Krona+One
 Font binary: https://fonts.gstatic.com/s/kronaone/v15/jAnEgHdjHcjgfIb1ZcUCMQ.ttf
 The SIL Open Font License is included at `../fonts/OFL.txt`, sourced from
 https://github.com/google/fonts/blob/main/ofl/kronaone/OFL.txt.
+
+Inter, the reference site's body typeface, is also self-hosted, including its
+variable weights for text and controls:
+`../fonts/inter-variable.woff2`, from
+https://github.com/rsms/inter/blob/master/docs/font-files/InterVariable.woff2.
+Its SIL Open Font License is included at `../fonts/Inter-OFL.txt`, from
+https://github.com/rsms/inter/blob/master/LICENSE.txt.

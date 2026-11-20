@@ -258,8 +258,9 @@ The public [Copilot Connection reference](https://github.com/Copilot-Connection/
 links to the [actual Copilot Fireside Chat site](https://copilotfireside.chat/).
 This app reuses its existing fireplace brand photograph with an explicit caption,
 not as a claim about confirmed Christmas panellists. The audience defaults to the
-reference site's charcoal-and-gold direction, with self-hosted Krona One display
-type and a newly drawn, restrained network motif. The simple flame icon is **not claimed to be
+reference site's charcoal-and-gold direction, with its Krona One display and Inter
+body typefaces self-hosted, plus a newly drawn, restrained network motif.
+The simple flame icon is **not claimed to be
 an official logo**. No separate Fireside logo asset was identified (the small mark
 on the existing site is the Microsoft Copilot product logo). Asset provenance is
 recorded alongside the image in `client/public/branding/README.md`.
