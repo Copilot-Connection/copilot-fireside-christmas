@@ -207,7 +207,7 @@ public sealed class BoardTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task External_tenant_accounts_can_vote_but_external_admin_roles_cannot_manage_the_event(bool cosmos)
+    public async Task Entra_accounts_alone_cannot_vote_or_use_foreign_admin_roles(bool cosmos)
     {
         await using var site = new Site(cosmos);
         using var external = await site.Client("Fireside.Admin");
@@ -215,12 +215,12 @@ public sealed class BoardTests
         await Token(external);
         var session = await external.GetFromJsonAsync<JsonElement>("/api/session");
         Assert.False(session.GetProperty("isAdmin").GetBoolean());
-        Assert.True(session.GetProperty("canVote").GetBoolean());
+        Assert.False(session.GetProperty("canVote").GetBoolean());
         Assert.Equal(HttpStatusCode.Forbidden, (await external.GetAsync("/api/admin/board")).StatusCode);
         var question = (await external.GetFromJsonAsync<BoardView>("/api/board"))!.Questions[0];
-        Assert.Equal(HttpStatusCode.Unauthorized, (await React(external, question.Id)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await React(external, question.Id)).StatusCode);
         (await external.PutAsJsonAsync("/api/participant", new NameInput("Guest from another organisation"))).EnsureSuccessStatusCode();
-        (await React(external, question.Id)).EnsureSuccessStatusCode();
+        Assert.Equal(HttpStatusCode.Forbidden, (await React(external, question.Id)).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await external.PostAsJsonAsync("/api/admin/questions",
             new QuestionInput("Cannot publish", "", true, false, 0))).StatusCode);
     }
@@ -366,7 +366,7 @@ public sealed class BoardTests
     [InlineData(true)]
     public async Task Speaker_timers_are_authoritative_and_group_mode_blocks_votes_even_after_stopping_the_clock(bool cosmos)
     {
-        await using var site = new Site(cosmos);
+        await using var site = new Site(cosmos, activeDiscussion: false);
         using var admin = await site.Client("Fireside.Admin");
         using var voter = await site.Client("Attendee");
         using var audience = await site.Client();
@@ -558,10 +558,14 @@ public sealed class BoardTests
         var second = board.Panellists.Single(p => p.Name == "Second speaker");
         var path = $"/api/admin/questions/{question.Id}/speaker";
         (await admin.PutAsJsonAsync(path, new SpeakerInput(first.Id))).EnsureSuccessStatusCode();
+        await Revision(admin);
+        (await admin.PostAsJsonAsync("/api/admin/discussion", new DiscussionInput(question.Id, false))).EnsureSuccessStatusCode();
         var requestId = Guid.NewGuid();
         (await React(voter, question.Id, "epic", requestId)).EnsureSuccessStatusCode();
         await Revision(admin);
         (await admin.PutAsJsonAsync(path, new SpeakerInput(second.Id))).EnsureSuccessStatusCode();
+        await Revision(admin);
+        (await admin.PostAsJsonAsync("/api/admin/discussion", new DiscussionInput(question.Id, false))).EnsureSuccessStatusCode();
         (await React(voter, question.Id, "dislike")).EnsureSuccessStatusCode();
         (await React(voter, question.Id, "epic", requestId)).EnsureSuccessStatusCode();
         board = await Revision(admin);
@@ -603,6 +607,8 @@ public sealed class BoardTests
         Assert.Equal(site.Clock.GetUtcNow(), adjustment.ChangedAt);
         await Revision(admin);
         (await admin.PutAsJsonAsync(path, new SpeakerInput(first.Id))).EnsureSuccessStatusCode();
+        await Revision(admin);
+        (await admin.PostAsJsonAsync("/api/admin/discussion", new DiscussionInput(question.Id, false))).EnsureSuccessStatusCode();
         (await React(voter, question.Id)).EnsureSuccessStatusCode();
         Assert.Equal(11, (await audience.GetFromJsonAsync<BoardView>("/api/board"))!.Scoreboard!.Speakers.Single(s => s.Id == first.Id).Points);
         await Revision(admin);
@@ -687,7 +693,7 @@ public sealed class BoardTests
     }
 }
 
-public sealed class Site(bool cosmos = false) : WebApplicationFactory<Program>
+public sealed class Site(bool cosmos = false, bool activeDiscussion = true) : WebApplicationFactory<Program>
 {
     public TestClock Clock { get; } = new();
     private readonly string directory = Path.Combine(Path.GetTempPath(), $"fireside-tests-{Guid.NewGuid():N}");
@@ -729,10 +735,14 @@ public sealed class Site(bool cosmos = false) : WebApplicationFactory<Program>
             await using var scope = Services.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<FiresideDb>();
             await db.Database.EnsureCreatedAsync();
-            db.Boards.Add(new Board { VotingOpen = true });
-            db.Questions.AddRange(new Question { Text = "A published question", Category = "Test", Visible = true },
+            var speaker = new Panellist { Name = "Visible person", Visible = true };
+            var question = new Question { Text = "A published question", Category = "Test", Visible = true,
+                SpeakerId = activeDiscussion ? speaker.Id : null };
+            db.Boards.Add(new Board { VotingOpen = true, CurrentQuestionId = activeDiscussion ? question.Id : null,
+                TimerStartedAt = activeDiscussion ? Clock.GetUtcNow() : null, TimerDurationSeconds = activeDiscussion ? 120 : null });
+            db.Questions.AddRange(question,
                 new Question { Text = "A hidden question", Visible = false });
-            db.Panellists.AddRange(new Panellist { Name = "Visible person", Visible = true },
+            db.Panellists.AddRange(speaker,
                 new Panellist { Name = "Hidden person", Visible = false });
             await db.SaveChangesAsync();
             if (cosmos)
@@ -768,6 +778,9 @@ public sealed class TestAuth(IOptionsMonitor<AuthenticationSchemeOptions> option
         var identity = new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, $"{tenant}:{person}"),
             new Claim(ClaimTypes.Name, "Test host"), new Claim(ClaimTypes.Role, role),
             new Claim("tid", tenant), new Claim("oid", person)], "Test");
+        if (role == "Attendee" && EntraIdentity.VoterKey(new ClaimsPrincipal(identity)) is { } voter)
+            identity = new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, voter.ToString("D")),
+                new Claim(ClaimTypes.Name, "Test audience account")], AudienceAccounts.Scheme);
         return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), "Test")));
     }
 }

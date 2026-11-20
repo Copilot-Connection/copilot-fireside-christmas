@@ -18,6 +18,7 @@
   </ItemGroup>
   <ItemGroup>
     <Content Remove="wwwroot/**/*" />
+    <EmbeddedResource Include="Schema\007-audience-accounts.sql" LogicalName="Fireside.AudienceAccountSchema" />
   </ItemGroup>
   <Target Name="BuildClient" BeforeTargets="ComputeFilesToPublish">
     <Exec WorkingDirectory="../client" Command="npm ci --no-fund" Condition="'$(SkipClientBuild)' != 'true'" />

@@ -1,8 +1,8 @@
 # Copilot Fireside Chat · Christmas edition
 
 A runnable React + ASP.NET Core application for a live Christmas panel. The audience
-sets a display name to view without signing in. **Reacting requires a work or school
-Microsoft Entra account from any organisation**; the host desk requires the host
+sets a display name to view without signing in. **Reacting requires a self-registered
+audience username and password**; the host desk requires Microsoft Entra, the host
 tenant and an explicit application role. Designed for **Azure App Service**, not
 Static Web Apps.
 
@@ -19,13 +19,14 @@ not create an Entra application or migrate event data automatically.
 - The compact header contains the demo notice, connection status and account
   controls. Question cards are read-only, with separate Total points and Your points
   boxes. Your points are the signed-in viewer's net +1/-1/+3 contribution, not an
-  action count or a list of other participants. Only the Live view has voting controls.
+  action count or a list of other participants. Only the Live view has voting controls;
+  it does not display a points total. Counts remain in Questions, Scoreboard and the host desk.
 - The default landing view uses a local copy of the user-selected December event
   poster. Hosts can upload a replacement PNG/JPEG and accessible description,
   restore the default, or select **Show landing page** to stop the discussion.
 - Name-to-view participation with a protected HTTP-only display-name cookie.
   Names are not authentication and are not public. Viewing and SignalR remain
-  anonymous; the voting API requires a validated organisational Entra identity.
+  anonymous; the voting API requires a separate, server-validated audience account.
 - Three repeatable actions: **Like the point** adds 1, **Don't like this point**
   subtracts 1, and **EPIC POINT!** adds 3. Scores may be negative. Every accepted
   action is a durable ledger entry; a request UUID prevents retries from scoring
@@ -53,8 +54,8 @@ not create an Entra application or migrate event data automatically.
   Expand it to see each speaker's points for each question
   and their total. New reactions are permanently credited to the published speaker
   active on that question when the server accepts them; switching speakers never
-  moves earlier points. Reactions without an active published speaker remain
-  explicitly unassigned. Deleted speakers retain their historical attribution in
+  moves earlier points. Historical unassigned reactions stay unassigned; new reactions
+  require an active published speaker and running timer. Deleted speakers retain their historical attribution in
   the host desk as “Removed speaker”; their scores are not published to audiences.
 - Hosts can edit a speaker/question total with a required reason. The server stores
   an additive adjustment with the actor's pseudonymous Entra key and server time,
@@ -84,6 +85,11 @@ not create an Entra application or migrate event data automatically.
   while group mode is active, even if the global voting switch is open or its
   timer has stopped/expired. Start a speaker timer or leave the discussion to exit
   group mode; the separate global pause remains respected.
+- Speaker voting requires the current published question, published speaker and a
+  running server timer. Stop/not-started/expired clocks reject new reactions, including
+  at the exact deadline. Transaction retries recheck time. Retrying an already accepted
+  request acknowledges that same action without adding points. The audience disables
+  controls at the shared deadline without waiting for the next board refresh.
 - Server-enforced host tenant plus admin role, CSRF protection, secure production cookies, same-origin
   APIs, validated input, rate-limited participation and revision-checked host edits.
 - SignalR invalidations after committed writes; clients refetch a filtered snapshot
@@ -91,7 +97,7 @@ not create an Entra application or migrate event data automatically.
   leaves the admin API. The public hub has no client-callable publishing methods.
 - SQL transactions and a reaction-request primary key prevent duplicate retries.
   Stale host edits and database contention return a visible retry/conflict response.
-- Production starts only with real Entra, SQL and Azure SignalR configuration.
+- Production starts only with real administrator Entra, Cosmos and Azure SignalR configuration.
   There is no production anonymous-admin shortcut.
 
 ## Run the local sample event
@@ -107,14 +113,15 @@ dotnet run --project .\server\Fireside.csproj --launch-profile Demo
 ```
 
 Open http://127.0.0.1:5180 and http://127.0.0.1:5180/admin in separate browser
-contexts. Set an audience name, then choose **Sign in as demo voter** to simulate
-Entra voting. Viewing without that step works; reaction buttons remain disabled. Choose
+contexts. Set an audience name, then choose **New here? Register** to create a real
+local audience account. Viewing without that step works; reaction buttons remain disabled. Choose
 **Enter demo host desk** on the admin page. Publish a question, discuss it and vote
-from the audience window. Demo voter sign-in represents one fixed sample identity
-across browsers, not a real Microsoft account. That identity can react repeatedly.
+from the audience window after starting a speaker timer. Sign into the same audience
+account in another browser to retain its personal contribution history.
 
 The explicit `Demo` launch profile sets Development, uses local SQLite and enables
-the labelled local host/voter shortcuts. Demo startup is rejected outside Development or
+the labelled local host shortcut only. Audience registration uses the same password
+and cookie flow as production. Demo startup is rejected outside Development or
 when the Azure App Service `WEBSITE_INSTANCE_ID` environment variable is present.
 The sample speakers are fictional placeholders, not confirmed guests. Samples are
 seeded only with `--seed-demo` into an empty database. Re-running initialization does
@@ -175,7 +182,7 @@ against a development event only.
 flowchart LR
   Audience[Public audience] --> App[App Service: React + ASP.NET Core]
   Host[Host desk] --> App
-  App --> Entra[Entra ID: organisational users]
+  App --> Entra[Entra ID: administrators only]
   Entra --> Roles[Host tenant + admin role]
   App --> Cosmos[Cosmos DB for NoSQL: event and vote ledger]
   App --> Blob[Private Blob Storage: uploaded images]
@@ -190,7 +197,7 @@ cross-origin cookie and authentication configuration. Azure SignalR fans out a
 data-free change event; browsers then fetch their own permitted projection.
 Transient reaction messages contain only the request ID, question ID and action
 kind, never the voter's identity or name.
-Personal point totals are derived server-side from the authenticated Entra identity
+Personal point totals are derived server-side from the authenticated audience account
 and returned only in that viewer's uncached board response; anonymous viewers receive
 no personal total. They are never included in public hub messages.
 Cosmos DB for NoSQL is mandatory outside local development/tests: local SQLite
@@ -215,16 +222,31 @@ partition to 20 GB. Images never enter core documents; oversized metadata is rej
 without committing a partial change. Configure monitoring for throttling, latency,
 document/partition size and spend; client conflicts are explicit and retryable.
 
-The Web application registration must support **Accounts in any organisational
-directory (multitenant)**, not personal Microsoft accounts. Audience OIDC uses the
-`organizations` v2 endpoint with Microsoft's `AadIssuerValidator`, signature,
-audience and lifetime validation, plus valid tenant/object ID checks. Personal
-Microsoft consumer identities are rejected. There is no `ValidateIssuer=false`
-shortcut. Tenant consent policies still apply: an external organisation may require
-administrator consent before its users can sign in.
+Audience registration uses private account documents in the existing Cosmos event
+partition (a separate table in local SQLite), never the public board/SignalR payload.
+Case-insensitive ASCII usernames use deterministic hashed document keys so concurrent
+registrations cannot create duplicates. Passwords are salted and hashed by ASP.NET Core
+Identity's PBKDF2 PasswordHasher (IdentityV3, 210,000 iterations), not custom cryptography.
+Passwords/passphrases must be 15-128 characters; usernames are 3-32 letters, numbers,
+dots, underscores or hyphens. No email, password recovery or account-linking service
+is provided. Anyone may create multiple accounts: this is not proof of one human.
 
-Voting accepts organisational identities from any Entra tenant. Host management
-additionally requires the configured administrative tenant **and** `Fireside.Admin`.
+The independent audience cookie is HTTP-only, HTTPS-only in production, SameSite Lax,
+non-sliding and limited to two hours. Each request validates its account ID/security
+stamp against durable storage. Registration, login and logout require CSRF protection.
+Account bodies are capped at 4096 bytes, hashing concurrency is bounded, and registration/
+login share a 30-request/minute/IP/instance limit. Five failed logins atomically lock
+an account for 15 minutes across instances; successful login resets the counter.
+Existing signed-in sessions are not revoked by someone else's failed login attempts.
+
+New accounts receive random immutable voter IDs, with no transfer of old Entra voting
+history, even if names match. Existing votes, personal totals, adjustments and event
+settings are untouched. Back up account documents with event data; the initial SQLite
+event importer deliberately refuses a source containing accounts rather than losing them.
+No new Azure resource or service tier is required; account reads/writes consume the
+existing Cosmos allowance and password hashing uses existing App Service CPU.
+
+Host management requires the configured administrative tenant **and** `Fireside.Admin`.
 An external tenant assigning that role to its own user cannot grant host access.
 Host-desk sign-in uses a separate, tenant-specific OIDC scheme so guest hosts
 authenticate in the host directory, not accidentally in their home directory.
@@ -232,21 +254,20 @@ External hosts can be invited as B2B guests in the host tenant and assigned the 
 there. The application stores no email addresses or raw Entra IDs in vote records;
 the stable hash remains pseudonymous personal data requiring an event retention policy.
 
-## Real Entra voter and administrator sign-in
+## Real Entra administrator sign-in
 
 After approval, an Entra administrator must:
 
 1. Select the administrative tenant and create a **multitenant Web application**
    registration, supported account type **Accounts in any organisational directory**.
-   Register `https://<event-host>/signin-oidc` and
-   `https://<event-host>/signin-oidc-admin` as Web redirect URIs, and
-   `https://<event-host>/signout-callback-oidc` as a signed-out callback.
-   For local Entra testing, also register `https://localhost:7180/signin-oidc`
-   and `https://localhost:7180/signin-oidc-admin`.
+   Register `https://<event-host>/signin-oidc-admin` as a Web redirect URI and
+   `https://<event-host>/signout-callback-oidc-admin` as a signed-out callback.
+   For local Entra testing, also register `https://localhost:7180/signin-oidc-admin`
+   and `https://localhost:7180/signout-callback-oidc-admin`. Existing unused audience
+   callback registrations can remain; the application no longer uses audience Entra.
 2. Add an app role with **value `Fireside.Admin`**, allowed member type **Users/Groups**,
    enabled. Assign only the intended host users/groups to it in Enterprise
-   applications in the host tenant. Do not require enterprise-application assignment
-   for all users if that would prevent the intended unassigned audience voters.
+   applications in the host tenant. Audience accounts are independent of this registration.
    Merely signing in or being an Entra directory administrator does not grant access.
 3. Configure the tenant ID, client ID and a client secret outside source control.
    The confidential server performs OIDC authorization code + PKCE; the browser
@@ -427,8 +448,9 @@ dotnet run --project .\server\Fireside.csproj --launch-profile Entra -- --initia
 This explicitly creates the initial schema and an empty local event, without sample
 speakers or questions, then exits. Cosmos rejects this initializer and must use the
 verified importer instead. Database creation is not automatically performed during normal startup.
-The initializer uses EF `EnsureCreated` for this first schema: it is **not** a
-schema upgrade system; do not rerun it as an upgrade mechanism.
+The initializer uses EF `EnsureCreated` for this first schema. It also idempotently adds
+the isolated `007-audience-accounts.sql` table to an otherwise current local schema.
+It is **not** an upgrade system for the older board schemas below.
 
 **Upgrading an existing database from the previous single-vote release:** stop
 writes and take a verified database backup. Run the scripts in `server/Schema`
@@ -451,10 +473,13 @@ per-question total, integrity and foreign-key checks. SQL Server scripts are his
 artifacts for previous releases, not part of the current Cosmos deployment.
 The previously identified SQL Server singleton-key/IDENTITY initializer issue has
 not been patched; SQL Server is no longer a supported production provider.
+For an existing current SQLite schema, apply `007-audience-accounts.sql` or rerun
+the initializer to add accounts only. It never resets votes or event content.
+Cosmos needs no schema reset, reimport or provisioning for accounts. Never rerun 006.
 Rehearse restore and compare totals before reopening writes.
 
-Before going live, verify real organisational sign-in from both the host tenant and
-an external tenant, personal-account rejection, external-tenant admin-role denial,
+Before going live, verify audience registration/login/logout and administrator
+Entra sign-in, external-tenant admin-role denial,
 host-tenant role assignment, managed-identity Cosmos/Blob connectivity and
 Cosmos transactional batches, Azure SignalR fan-out across two app instances, TLS forwarding,
 shared cookie keys and restore procedures in the approved environment. These
@@ -466,7 +491,7 @@ Operational notes:
 - `/health` is liveness, not a database/SignalR dependency readiness test.
 - Participation limits are per IP per app instance (60 writes/minute). Shared
   venue networks may need an agreed limit. Reactions are separately limited to
-  20 actions per 10 seconds per validated Entra identity per instance, with no
+  20 actions per 10 seconds per validated audience account per instance, with no
   queue. A 429 response is shown to the voter; cross-instance quotas require a
   separate design.
 - Uploaded landing artwork and published panellist photos are publicly served by the
@@ -480,7 +505,7 @@ Operational notes:
 - Successful commits remain successful if notification delivery fails; the server
   logs the failure and client reconciliation repairs missed invalidations.
 - No display names, raw Entra identifiers or Entra tokens are stored in the event/vote
-  documents; action records contain stable pseudonymous voter hashes, not anonymous
+  documents; action records contain stable pseudonymous account IDs (or historical Entra hashes), not anonymous
   identifiers. Reactions are not a one-person-one-vote poll. Publish an
   event contact and retention policy on `/privacy` before live use; the current text
   explicitly identifies that operator-owned policy as still to be supplied.

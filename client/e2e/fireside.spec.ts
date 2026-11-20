@@ -3,6 +3,40 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Board } from '../src/types';
 
+type ObservedReaction = { id: string; animation: string; end: { y: number; opacity: string; viewport: number } | null };
+declare global {
+  interface Window { observedReactions: ObservedReaction[] }
+}
+
+async function observeReactions(page: Page) {
+  await page.evaluate(() => {
+    const state = window;
+    state.observedReactions = [];
+    new MutationObserver(records => {
+      for (const record of records) for (const node of record.addedNodes) {
+        if (!(node instanceof HTMLElement) || !node.matches('.reaction-burst')) continue;
+        const name = getComputedStyle(node).animationName;
+        const animation = node.getAnimations()[0];
+        let end: ObservedReaction['end'] = null;
+        if (animation) {
+          const current = animation.currentTime;
+          animation.pause();
+          animation.currentTime = Number(animation.effect!.getTiming().duration);
+          const style = getComputedStyle(node);
+          end = { y: new DOMMatrix(style.transform).m42, opacity: style.opacity, viewport: innerHeight };
+          animation.currentTime = current;
+          animation.play();
+        }
+        state.observedReactions.push({ id: node.dataset.reactionId!, animation: name, end });
+      }
+    }).observe(document.querySelector('.reaction-overlay')!, { childList: true });
+  });
+}
+
+async function observed(page: Page) {
+  return page.evaluate(() => window.observedReactions);
+}
+
 test('audience speaker and group clocks warn at 15% with a steady reduced-motion alternative', async ({ page }, testInfo) => {
   await join(page, 'Sample timer viewer');
   const start = new Date('2030-12-16T16:00:00Z');
@@ -69,6 +103,15 @@ async function hostDesk(page: Page) {
   await expect(page.getByRole('heading', { name: 'Keep the conversation glowing.' })).toBeVisible();
 }
 
+async function signInAudience(page: Page, username = `guest-${randomUUID().slice(0, 20)}`, register = true) {
+  if (register) await page.getByRole('button', { name: 'New here? Register' }).click();
+  await page.getByLabel('Username', { exact: true }).fill(username);
+  await page.getByLabel('Password', { exact: true }).fill('Browser test winter passphrase!');
+  await page.getByRole('button', { name: register ? 'Create account & sign in' : 'Sign in', exact: true }).click();
+  await expect(page.locator('.site-header').getByRole('button', { name: `Sign out (${username})`, exact: true })).toBeVisible();
+  return username;
+}
+
 async function adminWrite(host: Page, url: string, method: string, data?: unknown) {
   const board: Board = await (await host.request.get('/api/admin/board')).json();
   const session = await (await host.request.get('/api/session')).json();
@@ -77,7 +120,50 @@ async function adminWrite(host: Page, url: string, method: string, data?: unknow
   expect(response.ok(), await response.text()).toBe(true);
 }
 
+test('registered audiences cannot react after speaker expiry or host stop', async ({ browser, page }) => {
+  const hostContext = await browser.newContext();
+  const host = await hostContext.newPage();
+  await hostDesk(host);
+  const original: Board = await (await host.request.get('/api/admin/board')).json();
+  let questionId: string | null = null;
+  try {
+    await join(page, 'Account timer viewer');
+    await signInAudience(page);
+    const text = `Account timer boundary ${Date.now()}`;
+    await adminWrite(host, '/api/admin/questions', 'POST', { text, category: 'Browser test only',
+      visible: true, answered: false, sortOrder: 9999, speakerId: original.panellists.find(p => p.visible)!.id });
+    const created: Board = await (await host.request.get('/api/admin/board')).json();
+    questionId = created.questions.find(q => q.text === text)!.id;
+    await adminWrite(host, '/api/admin/timing', 'PUT', { speakerSeconds: 5, groupSeconds: original.groupSeconds });
+    await adminWrite(host, '/api/admin/discussion', 'POST', { questionId, groupDiscussion: false });
+    const like = page.getByRole('button', { name: `Like the point: ${text}`, exact: true });
+    await expect(like).toBeEnabled();
+    await expect(page.getByText("Time's up", { exact: true })).toBeVisible({ timeout: 10000 });
+    await expect(like).toBeDisabled();
+    const session = await (await page.request.get('/api/session')).json();
+    const vote = () => page.request.post(`/api/questions/${questionId}/vote`, {
+      headers: { 'X-CSRF-TOKEN': session.csrfToken }, data: { requestId: randomUUID(), kind: 'like' },
+    });
+    expect((await vote()).status()).toBe(409);
+    await adminWrite(host, '/api/admin/discussion', 'POST', { questionId, groupDiscussion: false });
+    await expect(like).toBeEnabled();
+    await adminWrite(host, '/api/admin/discussion/timer', 'DELETE');
+    await expect(like).toBeDisabled();
+    expect((await vote()).status()).toBe(409);
+    await expect(page.locator('.current-question output')).toHaveCount(0);
+    await page.reload();
+    await expect(page.locator('.site-header').getByRole('button', { name: /^Sign out/ })).toBeVisible();
+    await expect(like).toBeDisabled();
+  } finally {
+    if (questionId) await adminWrite(host, `/api/admin/questions/${questionId}`, 'DELETE');
+    await adminWrite(host, '/api/admin/timing', 'PUT',
+      { speakerSeconds: original.speakerSeconds, groupSeconds: original.groupSeconds });
+    await hostContext.close();
+  }
+});
+
 test('repeatable scores and matching transient reactions reach independent browsers', async ({ browser, page }) => {
+  test.setTimeout(90000);
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   await join(page, 'Browser participant');
@@ -86,17 +172,20 @@ test('repeatable scores and matching transient reactions reach independent brows
   await expect(page.locator('.question-card button')).toHaveCount(0);
   await expect(page.locator('.personal-points').first()).toHaveText('Sign in to see');
   await page.getByRole('tab', { name: 'Live', exact: true }).click();
-  await page.getByRole('button', { name: 'Sign in as demo voter' }).click();
-  await expect(page.locator('.site-header').getByRole('button', { name: 'Sign out of Microsoft' })).toBeVisible();
+  const username = await signInAudience(page);
 
   const hostContext = await browser.newContext();
   const host = await hostContext.newPage();
   await hostDesk(host);
+  const initial: Board = await (await host.request.get('/api/admin/board')).json();
+  await adminWrite(host, '/api/admin/timing', 'PUT', { speakerSeconds: 120, groupSeconds: initial.groupSeconds });
+  await host.reload();
   await host.getByRole('button', { name: 'Add question', exact: true }).click();
   const questionText = `A sample Christmas point ${Date.now()}`;
   const editor = host.locator('.editor-form');
   await editor.getByLabel('Question', { exact: true }).fill(questionText);
   await editor.getByLabel('Category').fill('Sample browser test');
+  await editor.getByRole('combobox', { name: 'Speaker', exact: true }).selectOption(initial.panellists.find(p => p.visible)!.id);
   await editor.getByRole('button', { name: 'Save changes' }).click();
   await page.getByRole('tab', { name: 'Questions & votes' }).click();
   await expect(page.getByRole('heading', { name: questionText })).toHaveCount(0);
@@ -108,17 +197,20 @@ test('repeatable scores and matching transient reactions reach independent brows
   await expect(firstCard.locator('.personal-points')).toHaveText('0');
   await expect(firstCard.getByRole('button')).toHaveCount(0);
   await hostCard.getByRole('button', { name: 'Discuss now', exact: true }).click();
+  await hostCard.getByRole('button', { name: 'Start speaker timer', exact: true }).click();
   await page.getByRole('tab', { name: 'Live', exact: true }).click();
   const live = page.locator('.current-question');
   await expect(live).toContainText(questionText);
 
   const secondContext = await browser.newContext({ reducedMotion: 'reduce' });
   const second = await secondContext.newPage();
-  await join(second, 'Another browser, same demo identity');
-  await second.getByRole('button', { name: 'Sign in as demo voter' }).click();
+  await join(second, 'Another browser, same account');
+  await signInAudience(second, username, false);
   const secondLive = second.locator('.current-question');
   await expect(secondLive).toContainText(questionText);
   const secondCard = second.locator('.question-card').filter({ hasText: questionText });
+  await observeReactions(page);
+  await observeReactions(second);
   const actions = [
     { label: 'Like the point', kind: 'like', score: 1 },
     { label: 'Like the point', kind: 'like', score: 2 },
@@ -128,28 +220,23 @@ test('repeatable scores and matching transient reactions reach independent brows
   for (const [index, action] of actions.entries()) {
     await expect(page.locator('.reaction-burst')).toHaveCount(0);
     await live.getByRole('button', { name: `${action.label}: ${questionText}`, exact: true }).click();
-    const reaction = page.locator(`.reaction-burst[data-kind="${action.kind}"]`);
-    await expect(reaction).toBeAttached();
-    const id = await reaction.getAttribute('data-reaction-id');
+    await expect.poll(async () => (await observed(page)).length).toBe(index + 1);
+    const reaction = (await observed(page))[index];
+    const id = reaction.id;
     const matching = second.locator(`.reaction-burst[data-reaction-id="${id}"]`);
-    await expect(matching).toBeAttached();
-    await expect(live.locator('output')).toHaveText(`${action.score} ${action.score === 1 ? 'point' : 'points'}`);
-    await expect(secondLive.locator('output')).toHaveText(`${action.score} ${action.score === 1 ? 'point' : 'points'}`);
+    await expect.poll(async () => (await observed(second)).some(item => item.id === id)).toBe(true);
+    await expect(live.locator('output')).toHaveCount(0);
+    await expect(secondLive.locator('output')).toHaveCount(0);
+    await expect(firstCard.locator('.total-points')).toHaveText(String(action.score));
     await expect(firstCard.locator('.personal-points')).toHaveText(String(action.score));
     await expect(secondCard.locator('.personal-points')).toHaveText(String(action.score));
-    expect(await matching.evaluate(el => getComputedStyle(el).animationName)).toBe('none');
+    expect((await observed(second)).find(item => item.id === id)!.animation).toBe('none');
     if (index === 0) {
-      const end = await reaction.evaluate(el => {
-        const animation = el.getAnimations()[0];
-        animation.pause();
-        animation.currentTime = Number(animation.effect!.getTiming().duration);
-        const style = getComputedStyle(el);
-        return { y: new DOMMatrix(style.transform).m42, opacity: style.opacity, viewport: innerHeight };
-      });
+      const end = reaction.end!;
       expect(Math.abs(end.y + end.viewport * .33)).toBeLessThan(2);
       expect(end.opacity).toBe('0');
     }
-    await expect(reaction).toHaveCount(0);
+    await expect(page.locator(`.reaction-burst[data-reaction-id="${id}"]`)).toHaveCount(0);
     await expect(matching).toHaveCount(0);
   }
   await secondLive.getByRole('button', { name: `EPIC POINT!: ${questionText}`, exact: true }).click();
@@ -162,7 +249,8 @@ test('repeatable scores and matching transient reactions reach independent brows
   await expect(firstCard.locator('.personal-points')).toHaveText('7');
   await expect(firstCard.getByRole('button')).toHaveCount(0);
   await second.goto('/admin');
-  await expect(second.getByRole('alert')).toContainText('configured administrative tenant');
+  await expect(second.getByRole('button', { name: 'Enter demo host desk' })).toBeVisible();
+  expect((await second.request.get('/api/admin/board')).status()).toBe(403);
   await secondContext.close();
 
   await page.getByRole('tab', { name: 'Live', exact: true }).click();
@@ -239,7 +327,7 @@ test('local default artwork, durable host uploads and keyboard tabs stay on the 
   await expect(page.getByRole('tab', { name: 'Questions & votes' })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByRole('tabpanel', { name: 'Live', exact: true })).toBeHidden();
   await page.keyboard.press('End');
-  await expect(page.getByRole('tab', { name: 'Panellists' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tab').last()).toHaveAttribute('aria-selected', 'true');
   await page.keyboard.press('Home');
   await expect(page.getByRole('tab', { name: 'Live', exact: true })).toHaveAttribute('aria-selected', 'true');
   expect(page.url()).toBe(originalUrl);
@@ -271,7 +359,7 @@ test('hosts assign uploaded speaker portraits and synchronise speaker and non-vo
   let questionId: string | null = null;
   try {
     await join(page, 'Speaker timer viewer');
-    await page.getByRole('button', { name: 'Sign in as demo voter' }).click();
+    await signInAudience(page);
     await join(second, 'Independent timer viewer');
     await host.getByRole('button', { name: 'Edit timer lengths' }).click();
     await host.getByLabel('Speaker timer (seconds)', { exact: true }).fill('30');
@@ -353,7 +441,7 @@ test('hosts assign uploaded speaker portraits and synchronise speaker and non-vo
     await question.getByRole('button', { name: 'Start group discussion', exact: true }).click();
     for (const viewer of [page, second]) {
       await expect(viewer.locator('.current-question').getByText('Group discussion', { exact: true })).toBeVisible();
-      await expect(viewer.locator('.current-question button')).toHaveCount(0);
+      await expect(viewer.locator('.current-question .reaction-buttons button')).toHaveCount(0);
     }
     const group: Board = await (await page.request.get('/api/board')).json();
     expect(group.timerDurationSeconds).toBe(60);
@@ -365,7 +453,7 @@ test('hosts assign uploaded speaker portraits and synchronise speaker and non-vo
     expect(attempt.status()).toBe(409);
     await host.getByRole('button', { name: 'Stop timer', exact: true }).click();
     await expect(page.getByText('Timer not started', { exact: true })).toBeVisible();
-    await expect(page.locator('.current-question button')).toHaveCount(0);
+    await expect(page.locator('.current-question .reaction-buttons button')).toHaveCount(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   } finally {
     if (questionId) await adminWrite(host, `/api/admin/questions/${questionId}`, 'DELETE');

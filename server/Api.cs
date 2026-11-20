@@ -19,6 +19,7 @@ public sealed class ApiExceptionHandler(ILogger<ApiExceptionHandler> logger) : I
         var (detail, status) = exception switch
         {
             EventUnavailableException => ("The event store is not ready. Please retry shortly.", 503),
+            BadHttpRequestException { StatusCode: 413 } => ("The request body is too large.", 413),
             CosmosException { StatusCode: HttpStatusCode.RequestEntityTooLarge } =>
                 ("The event exceeds Cosmos DB's document or transaction size limit. Contact the host; this change was not saved.", 507),
             _ => ("Something went wrong. Please retry; if it continues, contact the event host.", 500)
@@ -34,7 +35,7 @@ public static class Api
     {
         app.MapGet("/api/board", async (IEventStore store, HttpContext context, TimeProvider clock) =>
         {
-            var voter = EntraIdentity.VoterKey(context.User);
+            var voter = AudienceAccounts.VoterKey(context.User);
             return Results.Ok(EventViews.Snapshot(await store.Read(voter, context.RequestAborted), false, clock, voter));
         });
         app.MapGet("/api/panellists/{id:guid}/photo", async (Guid id, IEventStore store, CancellationToken token) =>
@@ -252,11 +253,11 @@ public static class Api
     }
 
     private static async Task<IResult> Vote(Guid id, ReactionInput input, HttpContext context,
-        IEventStore store, ParticipantIdentity identities, LiveUpdates live)
+        IEventStore store, ParticipantIdentity identities, LiveUpdates live, TimeProvider clock)
     {
         if (identities.Read(context) is null) return Results.Problem("Set your name before voting.", statusCode: 401);
-        var voter = EntraIdentity.VoterKey(context.User);
-        if (voter is null) return Results.Problem("Sign in with an organisational Microsoft Entra account to vote.", statusCode: 401);
+        var voter = AudienceAccounts.VoterKey(context.User);
+        if (voter is null) return Results.Problem("Sign in with your audience username and password to vote.", statusCode: 401);
         var delta = input.Kind switch { "like" => 1, "dislike" => -1, "epic" => 3, _ => 0 };
         if (input.RequestId == Guid.Empty || delta == 0)
             return Invalid("Choose Like the point, Don't like this point, or EPIC POINT! with a new reaction identifier.");
@@ -270,6 +271,10 @@ public static class Api
                 return Results.Problem("Voting is closed for this question.", statusCode: 409);
             var speaker = data.Board.CurrentQuestionId == id &&
                 data.Panellists.Any(p => p.Id == question.SpeakerId && p.Visible) ? question.SpeakerId : null;
+            var now = clock.GetUtcNow();
+            if (speaker is null || data.Board.TimerStartedAt is not { } started ||
+                data.Board.TimerDurationSeconds is not { } duration || now < started || now >= started.AddSeconds(duration))
+                return Results.Problem("Voting is only available while the current speaker's timer is running.", statusCode: 409);
             data.NewVotes.Add(new Vote { Id = input.RequestId, QuestionId = id,
                 ParticipantId = voter.Value, Delta = delta, SpeakerId = speaker });
             data.AddScore(id, speaker, delta);

@@ -114,6 +114,10 @@ img { display: block; max-width: 100%; }
 .welcome .landing-artwork img { max-height: none; }
 .activity-stage.landing-stage { display: flex; flex-direction: column; justify-content: center; gap: 24px; padding: 24px 0 40px; }
 .landing-controls { display: flex; align-items: center; justify-content: space-between; gap: 24px; width: 100%; }
+.audience-login { width: 100%; max-width: 34rem; margin-top: 24px; gap: 10px; text-align: left; }
+.audience-login p { font-size: .9rem; color: var(--cp-text-muted); }
+.audience-login label { margin-top: 6px; }
+.account-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .landing-controls .activity-meta, .landing-controls .activity-signin, .landing-controls .ready-note { margin-top: 0; }
 .admin-artwork { width: 320px; max-height: 200px; object-fit: contain; object-position: left; }
 .audience-bar { display: flex; flex-basis: 100%; justify-content: space-between; align-items: center; gap: 16px; font-size: .8rem; }

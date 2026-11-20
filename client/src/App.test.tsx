@@ -9,7 +9,8 @@ const question: Question = {
   id: '1', text: 'What should we build?', category: 'Looking ahead', visible: true,
   answered: false, sortOrder: 0, score: 4, myScore: -1, speakerId: null, speakerIds: [],
 };
-const artwork = { imageUrl: '/branding/christmas-fireside.png', imageDescription: 'Event poster' };
+const artwork = { imageUrl: '/branding/christmas-fireside.png', imageDescription: 'Event poster',
+  timer: { serverTime: new Date().toISOString(), timerStartedAt: new Date().toISOString(), timerDurationSeconds: 120 } };
 
 describe('Repeatable audience reactions', () => {
   it.each([
@@ -19,7 +20,7 @@ describe('Repeatable audience reactions', () => {
     render(<CurrentActivity {...artwork} question={question} votingOpen canVote pending={false} onReact={react} />);
     fireEvent.click(screen.getByRole('button', { name: `${label}: ${question.text}` }));
     expect(react).toHaveBeenCalledWith(kind);
-    expect(screen.getByText('4 points')).toBeInTheDocument();
+    expect(screen.queryByText('4 points')).not.toBeInTheDocument();
   });
 
   it.each([
@@ -59,6 +60,22 @@ describe('Read-only question totals', () => {
 });
 
 describe('Current activity', () => {
+  it('disables voting at the shared deadline without waiting for a board refresh, and when stopped', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2030-01-01T00:00:00Z'));
+    const timer = { serverTime: '2026-12-16T16:00:00Z', timerStartedAt: '2026-12-16T16:00:00Z', timerDurationSeconds: 5 };
+    const props = { ...artwork, question, votingOpen: true, canVote: true, pending: false, onReact: vi.fn() };
+    const { rerender } = render(<CurrentActivity {...props} timer={timer} />);
+    expect(screen.getAllByRole('button')[0]).toBeEnabled();
+    act(() => vi.advanceTimersByTime(4750));
+    expect(screen.getAllByRole('button')[0]).toBeEnabled();
+    act(() => vi.advanceTimersByTime(250));
+    expect(screen.getAllByRole('button')[0]).toBeDisabled();
+    expect(screen.getByText('Voting is closed until the host starts a speaker timer.')).toBeVisible();
+    rerender(<CurrentActivity {...props} timer={{ ...timer, timerStartedAt: null, timerDurationSeconds: null }} />);
+    for (const button of screen.getAllByRole('button')) expect(button).toBeDisabled();
+    expect(screen.queryByText('4 points')).not.toBeInTheDocument();
+  });
   it('suppresses reactions throughout a group discussion even when global voting is open', () => {
     render(<CurrentActivity {...artwork} question={question} groupDiscussion votingOpen canVote pending={false} onReact={vi.fn()} />);
     expect(screen.getByText('Group discussion')).toBeVisible();

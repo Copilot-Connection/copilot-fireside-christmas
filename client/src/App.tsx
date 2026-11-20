@@ -2,11 +2,12 @@ import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from
 import { ArrowRight, ArrowUpRight, Check, Flame, Radio, ShieldCheck, Snowflake } from 'lucide-react';
 import { request, write, errorMessage } from './api';
 import type { Panellist, Question, ReactionKind, Session } from './types';
-import { DiscussionTimer, type TimerState } from './DiscussionTimer';
+import { DiscussionTimer, useTimerRemaining, type TimerState } from './DiscussionTimer';
 import { useBoard } from './useBoard';
 import { Admin } from './Admin';
 import { ReactionButtons, ReactionOverlay } from './Reactions';
 import { Scoreboard } from './Scoreboard';
+import { AudienceLogin } from './AudienceLogin';
 
 export function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -97,7 +98,7 @@ function NameForm({ session, onSaved, initial = '' }: { session: Session; onSave
       </button>
     </div>
     {error && <ErrorNotice message={error} />}
-    <p className="fine-print">No account needed to view. To react, sign in with a work or school Microsoft Entra account.
+    <p className="fine-print">No account needed to view. To react, register or sign in with your audience username and password.
       An essential cookie remembers your display name for 30 days; your name is not public.</p>
   </form>;
 }
@@ -143,15 +144,6 @@ export function Audience({ session, refreshSession }: { session: Session; refres
       document.getElementById('tab-live')?.focus();
     }
   }, [board, view]);
-  async function demoVoter() {
-    setPending('sign-in');
-    setVoteError('');
-    try {
-      await write('/auth/demo-voter', 'POST', session.csrfToken);
-      await refreshSession();
-    } catch (error) { setVoteError(errorMessage(error)); }
-    finally { setPending(null); }
-  }
   async function vote(id: string, kind: ReactionKind) {
     setPending(id);
     setVoteError('');
@@ -179,9 +171,9 @@ export function Audience({ session, refreshSession }: { session: Session; refres
         <span className="status-dot" /> {connection === 'Live' ? 'Connected to the fireside' : connection}
       </span>
       <div className="audience-account"><button className="text-button" onClick={() => setEditName(!editName)}>Hi, {session.participantName} <span>Change name</span></button>
-        {session.signedIn && <form action="/auth/logout" method="post">
+        {session.canVote && <form action="/auth/logout" method="post">
           <input type="hidden" name="__RequestVerificationToken" value={session.csrfToken} />
-          <button className="text-button" type="submit">Sign out of Microsoft</button>
+          <button className="text-button" type="submit">Sign out{session.audienceUsername ? ` (${session.audienceUsername})` : ''}</button>
         </form>}</div>
     </div>}>
     <ReactionOverlay reactions={reactions} />
@@ -203,25 +195,19 @@ export function Audience({ session, refreshSession }: { session: Session; refres
     </div>
     <header className="event-heading"><h1>{board.title}</h1><p>{board.subtitle}</p></header>
     {error && <ErrorNotice message={`${error} The board may be out of date.`} />}
-    {new URLSearchParams(location.search).has('authError') && <ErrorNotice message="Microsoft sign-in did not complete. Try again with a work or school account, or contact your organisation's administrator." />}
     <div className="tab-panel activity-panel" role="tabpanel" id="panel-live" aria-labelledby="tab-live" hidden={activeView !== 'live'}>
     <CurrentActivity question={current} votingOpen={board.votingOpen} canVote={session.canVote}
       speaker={board.panellists.find(person => person.id === current?.speakerId)}
       groupDiscussion={board.groupDiscussion} timer={board}
       imageUrl={board.landingImageUrl} imageDescription={board.landingImageDescription}
       pending={pending !== null} onReact={kind => { if (current) void vote(current.id, kind); }}>
-      {!session.canVote && <div className="activity-signin">
-        {session.demo ? <button className="button-primary" disabled={pending !== null} onClick={() => void demoVoter()}>
-          Sign in as demo voter <ArrowRight size={17} aria-hidden="true" /></button>
-          : <a className="button button-primary" href="/auth/login">Sign in with Microsoft to vote <ArrowRight size={17} aria-hidden="true" /></a>}
-        <p>{session.demo ? 'Development-only sign-in simulation.' : 'Work or school accounts from any organisation. Viewing is public.'}</p>
-      </div>}
+      {!session.canVote && <AudienceLogin session={session} onSignedIn={refreshSession} />}
     </CurrentActivity>
     </div>
     {voteError && <ErrorNotice message={voteError} />}
     <section className="tab-panel questions-section" role="tabpanel" id="panel-questions" aria-labelledby="tab-questions" hidden={activeView !== 'questions'}>
         <div className="queue-heading"><h2>Questions &amp; points</h2><span className="voting-state">{board.groupDiscussion ? 'Group discussion' : board.votingOpen ? 'Voting open' : 'Voting paused'}</span></div>
-        {!session.canVote && <p className="section-description">Sign in on the Live tab with your organisational Entra account to see your points and react to the current discussion.</p>}
+        {!session.canVote && <p className="section-description">Register or sign in on the Live tab to see your points and react while the current speaker's timer is running.</p>}
         <div className="tabs" aria-label="Filter questions">
           <button aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>Open questions <span>{board.questions.filter(q => !q.answered).length}</span></button>
           <button aria-pressed={filter === 'answered'} onClick={() => setFilter('answered')}>Answered <Check size={14} aria-hidden="true" /></button>
@@ -256,6 +242,8 @@ export function CurrentActivity({ question, imageUrl, imageDescription, votingOp
   onReact: (kind: ReactionKind) => void; children?: ReactNode;
   speaker?: Panellist; groupDiscussion?: boolean; timer?: TimerState;
 }) {
+  const remaining = useTimerRemaining(timer);
+  const timerRunning = remaining !== null && remaining > 0;
   if (!question) return <section className="activity-stage landing-stage" aria-label="Event landing page">
     <LandingArtwork source={imageUrl} description={imageDescription} />
     <div className="landing-controls">
@@ -267,11 +255,12 @@ export function CurrentActivity({ question, imageUrl, imageDescription, votingOp
     <div className="activity-copy" key={question.id}>
       <h2 id="activity-title" aria-live="polite" aria-atomic="true">{question.text}</h2>
       <p className="activity-description">{question.category || 'The current conversation.'}</p>
-      <div className="activity-meta"><span><Radio size={17} aria-hidden="true" />{groupDiscussion ? 'Group discussion' : 'Discussing now'}</span>
-        <output aria-live="polite">{question.score} {Math.abs(question.score) === 1 ? 'point' : 'points'}</output></div>
-      {canVote && !groupDiscussion && <ReactionButtons question={question} enabled={votingOpen} pending={pending} onReact={onReact} />}
-      {canVote && !groupDiscussion && !votingOpen && <p className="section-description">Voting is paused.</p>}
-      {!groupDiscussion && children}
+      <div className="activity-meta"><span><Radio size={17} aria-hidden="true" />{groupDiscussion ? 'Group discussion' : 'Discussing now'}</span></div>
+      {canVote && !groupDiscussion && <ReactionButtons question={question} enabled={votingOpen && timerRunning} pending={pending} onReact={onReact} />}
+      {canVote && !groupDiscussion && (!votingOpen || !timerRunning) &&
+        <p className="section-description" role="status">{!votingOpen ? 'Voting is paused.' :
+          'Voting is closed until the host starts a speaker timer.'}</p>}
+      {children}
     </div>
     {groupDiscussion ? <aside className="discussion-aside">
       <h3>Open floor</h3><p>All panellists can join in. Voting is off during this discussion.</p>
@@ -319,20 +308,22 @@ export function Surface({ title, children }: { title: string; children: ReactNod
 export function Privacy() {
   return <article className="privacy-page">
     <h1>Privacy &amp; participation</h1>
-    <p>You don't need a Microsoft account to view the audience page. Set a display name to enter.
-      Sending reactions requires a work or school Microsoft Entra account from any organisation.
+    <p>You don't need an account to view the audience page. Set a display name to enter.
+      Sending reactions requires a registered audience username and password.
       Your display name is stored in a protected, HTTP-only essential cookie, not in the vote database or a public attendee list.</p>
     <h2>What we store</h2><p>The display-name cookie lasts 30 days. When you sign in, a separate protected authentication
       cookie holds identity claims for up to two hours. Each accepted reaction stores its question, score change,
-      request identifier and a stable hash derived from your Entra tenant/user identifiers. It does not store raw
-      identity identifiers, your display name or email. This is pseudonymous personal data, not anonymous data.</p>
+      request identifier and a random, stable audience account identifier. Account records hold your username,
+      a salted PBKDF2 password hash and failed-sign-in/lockout state, never your plaintext password.
+      Older reactions retain their existing pseudonymous Entra identifiers; they are not linked to new accounts.
+      This is personal data, not anonymous data. There is no self-service password reset.</p>
     <h2>Repeatable reactions</h2><p>You can react repeatedly while voting is open: likes add 1 point, dislikes subtract
       1 and epic points add 3. Short per-account rate limits protect the live experience. A festive animation is
       broadcast without your name or identity; old animations are not replayed after reconnecting.
-      Some organisations require administrator consent before sign-in.</p>
+      Reactions are accepted only while the current speaker's timer is running, never during group discussion.</p>
     <h2>Administrators</h2><p>The host desk requires both the configured host tenant and an explicitly assigned
       Fireside.Admin application role. A role assigned in another tenant does not grant host access.
-      Microsoft handles sign-in for voters and administrators.</p>
+      Microsoft handles administrator sign-in only. Audience accounts cannot grant administrator access.</p>
     <h2>Retention and support</h2><p>Event hosts control the questions and vote records and must publish their contact
       and event retention policy before going live. Removing a question also removes its reactions. Uploaded landing
       artwork and its description are public; hosts should remove private metadata before uploading.

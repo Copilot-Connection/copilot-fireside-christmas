@@ -9,6 +9,11 @@ public static class DatabaseSetup
         await using var scope = services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<FiresideDb>();
         await db.Database.EnsureCreatedAsync();
+        await using var schema = typeof(DatabaseSetup).Assembly
+            .GetManifestResourceStream("Fireside.AudienceAccountSchema")
+            ?? throw new InvalidOperationException("The audience account schema is missing.");
+        using var reader = new StreamReader(schema);
+        await db.Database.ExecuteSqlRawAsync(await reader.ReadToEndAsync());
         if (await db.Boards.AnyAsync()) return;
         db.Boards.Add(new Board
         {

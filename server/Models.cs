@@ -90,10 +90,14 @@ public sealed class FiresideDb(DbContextOptions<FiresideDb> options) : DbContext
     public DbSet<Vote> Votes => Set<Vote>();
     public DbSet<QuestionSpeakerOrder> QuestionSpeakerOrders => Set<QuestionSpeakerOrder>();
     public DbSet<ScoreAdjustment> ScoreAdjustments => Set<ScoreAdjustment>();
+    public DbSet<AudienceAccount> AudienceAccounts => Set<AudienceAccount>();
 
     protected override void OnModelCreating(ModelBuilder model)
     {
         model.Entity<Board>().Property(b => b.Revision).IsConcurrencyToken();
+        model.Entity<AudienceAccount>().HasKey(a => a.Id);
+        model.Entity<AudienceAccount>().HasIndex(a => a.UserId).IsUnique();
+        model.Entity<AudienceAccount>().Property(a => a.Version).IsConcurrencyToken();
         model.Entity<Board>().ToTable(t =>
         {
             t.HasCheckConstraint("CK_Boards_Durations", "[SpeakerSeconds] BETWEEN 5 AND 3600 AND [GroupSeconds] BETWEEN 5 AND 3600");

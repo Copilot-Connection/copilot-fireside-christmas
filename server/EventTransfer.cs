@@ -31,6 +31,13 @@ public sealed class EventArchive(EventData data, IReadOnlyList<Vote> votes, IRea
         await using (var command = connection.CreateCommand())
         {
             command.Transaction = transaction;
+            command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'AudienceAccounts'";
+            if ((long)(await command.ExecuteScalarAsync(token))! > 0)
+            {
+                command.CommandText = "SELECT EXISTS(SELECT 1 FROM AudienceAccounts)";
+                if ((long)(await command.ExecuteScalarAsync(token))! != 0)
+                    throw new InvalidDataException("This event contains audience accounts. The initial event importer cannot transfer accounts; use an account-aware migration. No target data was written.");
+            }
             command.CommandText = "PRAGMA integrity_check";
             if ((string?)await command.ExecuteScalarAsync(token) != "ok")
                 throw new InvalidDataException("SQLite integrity check failed; the event was not imported.");
