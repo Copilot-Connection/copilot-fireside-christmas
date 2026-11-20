@@ -275,10 +275,10 @@ export function CurrentActivity({ question, imageUrl, imageDescription, votingOp
     </div>
     {groupDiscussion ? <aside className="discussion-aside">
       <h3>Open floor</h3><p>All panellists can join in. Voting is off during this discussion.</p>
-      {timer && <DiscussionTimer state={timer} />}
+      {timer && <DiscussionTimer state={timer} warnWhenLow />}
     </aside> : speaker ? <aside className="speaker-card" aria-label="Current speaker">
       <PanellistPhoto person={speaker} />
-      <div><h3>{speaker.name}</h3><p>{speaker.role}</p>{timer && <DiscussionTimer state={timer} />}</div>
+      <div><h3>{speaker.name}</h3><p>{speaker.role}</p>{timer && <DiscussionTimer state={timer} warnWhenLow />}</div>
     </aside> : <figure className="activity-photo">
       <img src="/branding/fireside-scene.jpg" alt="" width={2280} height={1522} />
       <figcaption>Original show photograph,<br />not this event's confirmed panel.</figcaption>

@@ -3,7 +3,7 @@ import type { Board } from './types';
 
 export type TimerState = Pick<Board, 'timerStartedAt' | 'timerDurationSeconds' | 'serverTime'>;
 
-export function DiscussionTimer({ state }: { state: TimerState }) {
+export function DiscussionTimer({ state, warnWhenLow = false }: { state: TimerState; warnWhenLow?: boolean }) {
   const [clock, setClock] = useState(() => ({ now: Date.now(), offset: Date.parse(state.serverTime) - Date.now() }));
   useEffect(() => {
     const now = Date.now();
@@ -15,10 +15,12 @@ export function DiscussionTimer({ state }: { state: TimerState }) {
   if (!state.timerStartedAt || state.timerDurationSeconds === null)
     return <p className="timer-idle">Timer not started</p>;
   const deadline = Date.parse(state.timerStartedAt) + state.timerDurationSeconds * 1000;
-  const seconds = Math.max(0, Math.ceil((deadline - clock.now - clock.offset) / 1000));
+  const remaining = Math.max(0, deadline - clock.now - clock.offset);
+  const seconds = Math.ceil(remaining / 1000);
+  const warning = warnWhenLow && remaining > 0 && remaining <= state.timerDurationSeconds * 1000 * 0.15;
   const formatted = `${Math.floor(seconds / 60).toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}`;
-  return <div className={`discussion-timer ${seconds === 0 ? 'timer-expired' : ''}`}>
-    <span aria-live="polite">{seconds === 0 ? "Time's up" : 'Time remaining'}</span>
+  return <div className={`discussion-timer ${seconds === 0 ? 'timer-expired' : warning ? 'timer-warning' : ''}`}>
+    <span aria-live="polite">{seconds === 0 ? "Time's up" : warning ? 'Time running low' : 'Time remaining'}</span>
     <time role="timer" aria-label="Discussion time remaining" dateTime={`PT${seconds}S`}>{formatted}</time>
   </div>;
 }

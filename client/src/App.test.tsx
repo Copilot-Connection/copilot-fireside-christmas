@@ -97,6 +97,39 @@ describe('Current activity', () => {
     expect(screen.getByText("Time's up")).toBeVisible();
   });
 
+  it.each([
+    { groupDiscussion: false, duration: 180 },
+    { groupDiscussion: true, duration: 240 },
+  ])('warns on the audience clock at exactly 15% remaining: %j', ({ groupDiscussion, duration }) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-12-16T16:00:00Z'));
+    render(<CurrentActivity {...artwork} question={question} votingOpen canVote pending={false} onReact={vi.fn()}
+      groupDiscussion={groupDiscussion}
+      speaker={{ id: 'speaker', name: 'Sample speaker', role: 'Panellist', bio: '', visible: true, sortOrder: 0, photoUrl: null }}
+      timer={{ serverTime: '2026-12-16T16:00:00Z', timerStartedAt: '2026-12-16T16:00:00Z', timerDurationSeconds: duration }} />);
+    act(() => vi.advanceTimersByTime(duration * 850 - 250));
+    expect(screen.getByText('Time remaining')).toBeVisible();
+    expect(screen.getByRole('timer').parentElement).not.toHaveClass('timer-warning');
+    act(() => vi.advanceTimersByTime(250));
+    expect(screen.getByText('Time running low')).toBeVisible();
+    expect(screen.getByRole('timer').parentElement).toHaveClass('timer-warning');
+    act(() => vi.advanceTimersByTime(duration * 150));
+    expect(screen.getByText("Time's up")).toBeVisible();
+    expect(screen.getByRole('timer').parentElement).not.toHaveClass('timer-warning');
+  });
+
+  it('keeps the host clock steady and warns immediately when recovering an audience deadline', () => {
+    const state = { serverTime: '2026-12-16T16:01:30Z', timerStartedAt: '2026-12-16T16:00:00Z', timerDurationSeconds: 100 };
+    const { rerender } = render(<DiscussionTimer state={state} />);
+    expect(screen.getByText('Time remaining')).toBeVisible();
+    rerender(<DiscussionTimer state={state} warnWhenLow />);
+    expect(screen.getByText('Time running low')).toBeVisible();
+    expect(screen.getByRole('timer')).toHaveTextContent('00:10');
+    rerender(<DiscussionTimer state={{ ...state, timerStartedAt: null }} warnWhenLow />);
+    expect(screen.getByText('Timer not started')).toBeVisible();
+    expect(screen.queryByText('Time running low')).not.toBeInTheDocument();
+  });
+
   it('allows the same reaction again instead of permanently disabling a voted question', () => {
     const react = vi.fn();
     render(<CurrentActivity {...artwork} question={question} votingOpen canVote pending={false} onReact={react} />);

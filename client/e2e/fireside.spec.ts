@@ -3,6 +3,51 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Board } from '../src/types';
 
+test('audience speaker and group clocks warn at 15% with a steady reduced-motion alternative', async ({ page }, testInfo) => {
+  await join(page, 'Sample timer viewer');
+  const start = new Date('2030-12-16T16:00:00Z');
+  await page.clock.install();
+  await page.clock.pauseAt(start);
+  let groupDiscussion = false;
+  let duration = 180;
+  const speakerId = randomUUID();
+  const questionId = randomUUID();
+  await page.route('**/api/board', async route => {
+    const response = await route.fetch();
+    const board: Board = await response.json();
+    await route.fulfill({ json: { ...board, currentQuestionId: questionId, groupDiscussion,
+      timerStartedAt: start.toISOString(), serverTime: start.toISOString(), timerDurationSeconds: duration,
+      panellists: [...board.panellists, { id: speakerId, name: 'Sample timer speaker', role: 'Panellist',
+        bio: '', visible: true, sortOrder: 0, photoUrl: null }],
+      questions: [...board.questions, { id: questionId, text: 'Sample timer warning', category: 'Browser-only preview',
+        visible: true, answered: false, sortOrder: 0, score: 0, myScore: null, speakerId, speakerIds: [speakerId] }],
+    } });
+  });
+  for (const mode of ['speaker', 'group']) {
+    groupDiscussion = mode === 'group';
+    duration = groupDiscussion ? 240 : 180;
+    await page.clock.setSystemTime(start);
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    await page.reload();
+    const timer = page.getByRole('timer');
+    await expect(timer).toBeVisible();
+    await page.clock.fastForward(duration * 850 - 250);
+    await expect(page.getByText('Time remaining', { exact: true })).toBeVisible();
+    await expect(page.locator('.timer-warning')).toHaveCount(0);
+    await page.clock.fastForward(250);
+    await expect(page.getByText('Time running low', { exact: true })).toBeVisible();
+    await expect(timer).toHaveCSS('animation-name', 'timer-warning');
+    await page.locator('.current-question').screenshot({ path: testInfo.outputPath(`${mode}-timer-warning.png`),
+      animations: 'allow' });
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await expect(timer).toHaveCSS('animation-name', 'none');
+    await expect(page.getByText('Time running low', { exact: true })).toBeVisible();
+    await page.clock.fastForward(duration * 150);
+    await expect(page.getByText("Time's up")).toBeVisible();
+    await expect(page.locator('.timer-warning')).toHaveCount(0);
+  }
+});
+
 async function join(page: Page, name: string) {
   await page.goto('/');
   await page.getByLabel('What should we call you?').fill(name);
