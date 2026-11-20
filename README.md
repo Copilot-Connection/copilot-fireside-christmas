@@ -6,8 +6,9 @@ Microsoft Entra account from any organisation**; the host desk requires the host
 tenant and an explicit application role. Designed for **Azure App Service**, not
 Static Web Apps.
 
-**No Azure resources, Entra applications, infrastructure templates or deployment
-workflows have been created.** Scaffolding and provisioning require separate approval.
+Azure infrastructure is defined in `infra\main.bicep`. Running the template creates
+billable resources; review the target, capacity and cost before deploying. It does
+not create an Entra application or migrate event data automatically.
 
 ## What it does
 
@@ -273,6 +274,54 @@ sign-in/expiry, not by immediately revoking an already-issued app cookie.
 Agree the subscription, region, resource names, capacity, budget, domain and admin
 tenant before any infrastructure scaffold. Approve a separate deployment step before
 creating or modifying billable resources.
+
+### Bicep deployment
+
+`infra\main.bicep` is a subscription-scope entry point with modules for Linux B1
+App Service, Cosmos DB for NoSQL Serverless/Strong consistency, private Hot LRS
+Blob Storage, SignalR Standard S1, Key Vault, and linked monitoring. It creates
+managed-identity permissions, persistent cookie-key configuration and server-only
+telemetry settings. The reviewed resource names use the `fireside-prod-5fa8`
+suffix; review every name before reusing this template for a different event.
+This is a single-instance/single-region baseline with public HTTPS service endpoints,
+not private networking or a zone-redundant design.
+
+The parameter examples deliberately contain placeholders. Supply real metadata in
+a local ignored parameter file, never credentials. The deployment principal needs
+permission to create resources and assign roles in the selected subscription.
+Check that the intended Azure CLI account belongs to the intended tenant; commands
+below explicitly select the subscription without changing shared CLI defaults.
+
+```powershell
+$subscriptionId = '<subscription-guid>'
+$parametersFile = '<absolute-path-to-local-metadata.parameters.json>'
+
+az deployment sub what-if --subscription $subscriptionId --location swedencentral `
+  --template-file .\infra\main.bicep --parameters "@$parametersFile"
+
+# Only after reviewing the what-if and approving provisioning:
+az deployment sub create --subscription $subscriptionId --location swedencentral `
+  --template-file .\infra\main.bicep --parameters "@$parametersFile"
+```
+
+Before deploying application code, create/configure the dedicated multitenant
+Entra Web registration and host role described above. Use the template's actual
+`appServiceHostname` output for redirect URIs, not an assumed hostname. Using the
+operator's Key Vault data access, store the registration's client ID and returned
+client secret directly as `entra-client-id` and `entra-client-secret`. Transfer
+the credential to Key Vault entirely in memory; do not put it in CLI arguments,
+parameter files, transcripts or environment files. This explicit post-provisioning
+step avoids needing credentials before the vault exists. SignalR and monitoring
+connection secrets are created by Bicep; Entra references deliberately remain
+unresolved until registration setup. Verify every Key Vault reference resolves
+before publishing the application.
+
+Build the published application as described above, then upload that ZIP with
+`az webapp deploy --subscription <subscription-guid> --resource-group <group> --name
+<app> --type zip --src-path <published-zip>`. The template temporarily enables SCM
+basic publishing for this deployment lifecycle; disable and verify it after
+upload, including failure cleanup. FTP remains disabled. Import and verify the
+existing event using the cutover procedure below; no startup seeding occurs.
 
 | App setting | Required value / decision |
 |---|---|
