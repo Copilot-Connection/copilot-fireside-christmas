@@ -30,9 +30,10 @@ public static class Api
 {
     public static void MapFiresideApi(this WebApplication app)
     {
-        app.MapGet("/api/board", async (FiresideDb db, HttpContext context, ParticipantIdentity identities) =>
-            Results.Ok(await Snapshot(db, identities.Read(context)?.Id, false, context.RequestAborted)));
-        app.MapPost("/api/questions/{id:guid}/vote", Vote).RequireRateLimiting("participation");
+        app.MapGet("/api/board", async (FiresideDb db, HttpContext context) =>
+            Results.Ok(await Snapshot(db, EntraIdentity.VoterKey(context.User), false, context.RequestAborted)));
+        app.MapPost("/api/questions/{id:guid}/vote", Vote)
+            .RequireAuthorization("Voter").RequireRateLimiting("participation");
 
         var admin = app.MapGroup("/api/admin").RequireAuthorization("Admin");
         admin.MapGet("/board", async (FiresideDb db, CancellationToken token) =>
@@ -133,6 +134,8 @@ public static class Api
     {
         var participant = identities.Read(context);
         if (participant is null) return Results.Problem("Set your name before voting.", statusCode: 401);
+        var voter = EntraIdentity.VoterKey(context.User);
+        if (voter is null) return Results.Problem("Sign in with an organisational Microsoft Entra account to vote.", statusCode: 401);
         var token = context.RequestAborted;
         try
         {
@@ -141,9 +144,9 @@ public static class Api
             var eligible = board.VotingOpen && await db.Questions
                 .AnyAsync(q => q.Id == id && q.Visible && !q.Answered, token);
             if (!eligible) return Results.Problem("Voting is closed for this question.", statusCode: 409);
-            if (await db.Votes.AnyAsync(v => v.QuestionId == id && v.ParticipantId == participant.Id, token))
+            if (await db.Votes.AnyAsync(v => v.QuestionId == id && v.ParticipantId == voter, token))
                 return Results.NoContent();
-            db.Votes.Add(new Vote { QuestionId = id, ParticipantId = participant.Id });
+            db.Votes.Add(new Vote { QuestionId = id, ParticipantId = voter.Value });
             await db.SaveChangesAsync(token);
             await transaction.CommitAsync(token);
         }

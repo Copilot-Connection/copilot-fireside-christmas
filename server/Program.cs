@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
+using Microsoft.IdentityModel.Validators;
 using System.Threading.RateLimiting;
 
 var initialize = args.Contains("--initialize-database");
@@ -19,6 +20,13 @@ if (demo && (!builder.Environment.IsDevelopment() ||
     throw new InvalidOperationException("Demo authentication is only allowed in local Development.");
 if (seedDemo && (!demo || !initialize))
     throw new InvalidOperationException("Sample data requires local demo mode and --initialize-database.");
+var adminTenantId = demo ? EntraIdentity.DemoTenant : builder.Configuration["AzureAd:TenantId"];
+if (!Guid.TryParse(adminTenantId, out var adminTenant))
+    throw new InvalidOperationException("Configure AzureAd:TenantId as the administrative tenant GUID.");
+var entra = new EntraIdentity(adminTenant);
+builder.Services.AddSingleton(entra);
+const string audienceScheme = "EntraAudience";
+const string adminScheme = "EntraAdmin";
 
 var sqlite = builder.Configuration["Database:Provider"] == "Sqlite";
 if (sqlite && !builder.Environment.IsDevelopment() && !builder.Environment.IsEnvironment("Testing"))
@@ -71,7 +79,7 @@ var auth = builder.Services.AddAuthentication(options =>
     options.DefaultChallengeScheme = CookieAuthenticationDefaults.AuthenticationScheme;
 }).AddCookie(options =>
 {
-    options.Cookie.Name = "__Host-fireside-admin";
+    options.Cookie.Name = "__Host-fireside-auth";
     options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
     options.Cookie.SameSite = SameSiteMode.Lax;
     options.ExpireTimeSpan = TimeSpan.FromHours(2);
@@ -92,20 +100,19 @@ if (demo)
     // The local HTTP demo uses a different cookie, never a production authentication fallback.
     builder.Services.Configure<CookieAuthenticationOptions>(CookieAuthenticationDefaults.AuthenticationScheme, options =>
     {
-        options.Cookie.Name = "fireside-demo-admin";
+        options.Cookie.Name = "fireside-demo-auth";
         options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
     });
 }
 else if (!builder.Environment.IsEnvironment("Testing"))
 {
-    var tenant = builder.Configuration["AzureAd:TenantId"];
     var clientId = builder.Configuration["AzureAd:ClientId"];
     var secret = builder.Configuration["AzureAd:ClientSecret"];
-    if (!Guid.TryParse(tenant, out _) || !Guid.TryParse(clientId, out _) || string.IsNullOrWhiteSpace(secret))
-        throw new InvalidOperationException("Configure AzureAd tenant ID, client ID and client secret for admin sign-in.");
-    auth.AddOpenIdConnect(options =>
+    if (!Guid.TryParse(clientId, out _) || string.IsNullOrWhiteSpace(secret))
+        throw new InvalidOperationException("Configure AzureAd client ID and client secret for organisational Entra sign-in.");
+    void ConfigureEntra(OpenIdConnectOptions options, string authority, string callback, string signoutCallback)
     {
-        options.Authority = $"https://login.microsoftonline.com/{tenant}/v2.0";
+        options.Authority = authority;
         options.ClientId = clientId;
         options.ClientSecret = secret;
         options.ResponseType = OpenIdConnectResponseType.Code;
@@ -115,21 +122,38 @@ else if (!builder.Environment.IsEnvironment("Testing"))
         options.TokenValidationParameters.NameClaimType = "name";
         options.TokenValidationParameters.RoleClaimType = "roles";
         options.TokenValidationParameters.ValidateIssuer = true;
-        options.CallbackPath = "/signin-oidc";
-        options.SignedOutCallbackPath = "/signout-callback-oidc";
+        options.TokenValidationParameters.IssuerValidator =
+            AadIssuerValidator.GetAadIssuerValidator(options.Authority).Validate;
+        options.CallbackPath = callback;
+        options.SignedOutCallbackPath = signoutCallback;
         options.Events.OnRemoteFailure = context =>
         {
             context.HttpContext.RequestServices.GetRequiredService<ILoggerFactory>()
-                .CreateLogger("EntraAuthentication").LogWarning("Administrator sign-in failed: {FailureType}",
+                .CreateLogger("EntraAuthentication").LogWarning("Entra sign-in failed: {FailureType}",
                     context.Failure?.GetType().Name ?? "RemoteFailure");
             context.HandleResponse();
-            context.Response.Redirect("/admin?authError=1");
+            context.Response.Redirect(context.Properties?.RedirectUri == "/admin" ? "/admin?authError=1" : "/?authError=1");
             return Task.CompletedTask;
         };
-    });
+        options.Events.OnTokenValidated = context =>
+        {
+            if (context.Principal is null || EntraIdentity.VoterKey(context.Principal) is null)
+                context.Fail("An organisational Entra account with valid tenant and object identifiers is required.");
+            return Task.CompletedTask;
+        };
+    }
+    auth.AddOpenIdConnect(audienceScheme, options => ConfigureEntra(options,
+        "https://login.microsoftonline.com/organizations/v2.0", "/signin-oidc", "/signout-callback-oidc"));
+    auth.AddOpenIdConnect(adminScheme, options => ConfigureEntra(options,
+        $"https://login.microsoftonline.com/{adminTenant:D}/v2.0", "/signin-oidc-admin", "/signout-callback-oidc-admin"));
 }
-builder.Services.AddAuthorization(options => options.AddPolicy("Admin", policy =>
-    policy.RequireAuthenticatedUser().RequireRole("Fireside.Admin")));
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy("Admin", policy => policy.RequireAuthenticatedUser()
+        .RequireAssertion(context => entra.IsAdmin(context.User)));
+    options.AddPolicy("Voter", policy => policy.RequireAuthenticatedUser()
+        .RequireAssertion(context => EntraIdentity.VoterKey(context.User) is not null));
+});
 var signalr = builder.Services.AddSignalR(options => options.MaximumReceiveMessageSize = 4096);
 var signalrConnection = builder.Configuration.GetConnectionString("AzureSignalR");
 if (!string.IsNullOrWhiteSpace(signalrConnection))
@@ -186,7 +210,8 @@ app.MapGet("/api/session", (HttpContext context, IAntiforgery csrf, ParticipantI
     Results.Ok(new
     {
         participantName = identities.Read(context)?.Name,
-        isAdmin = context.User.IsInRole("Fireside.Admin"),
+        isAdmin = entra.IsAdmin(context.User),
+        canVote = EntraIdentity.VoterKey(context.User) is not null,
         signedIn = context.User.Identity?.IsAuthenticated == true,
         adminName = context.User.Identity?.Name,
         demo,
@@ -199,26 +224,30 @@ app.MapPut("/api/participant", (NameInput input, HttpContext context, Participan
     var participant = identities.Set(context, name!);
     return Results.Ok(new { participantName = participant.Name });
 }).RequireRateLimiting("participation");
-app.MapGet("/auth/login", (HttpContext context) => demo
-    ? Results.Redirect("/admin")
-    : Results.Challenge(new AuthenticationProperties { RedirectUri = "/admin" },
-        [OpenIdConnectDefaults.AuthenticationScheme]));
+app.MapGet("/auth/login", (string? destination) => demo
+    ? Results.Redirect(destination == "admin" ? "/admin" : "/")
+    : Results.Challenge(new AuthenticationProperties { RedirectUri = destination == "admin" ? "/admin" : "/" },
+        [destination == "admin" ? adminScheme : audienceScheme]));
 app.MapPost("/auth/logout", () => Results.SignOut(
     new AuthenticationProperties { RedirectUri = "/" },
     demo ? [CookieAuthenticationDefaults.AuthenticationScheme] :
-        [CookieAuthenticationDefaults.AuthenticationScheme, OpenIdConnectDefaults.AuthenticationScheme]));
+        [CookieAuthenticationDefaults.AuthenticationScheme, audienceScheme]));
 if (demo)
 {
-    app.MapPost("/auth/demo-admin", async (HttpContext context) =>
+    async Task DemoSignIn(HttpContext context, bool admin)
     {
         var identity = new ClaimsIdentity([
-            new Claim(ClaimTypes.NameIdentifier, "local-demo"),
-            new Claim(ClaimTypes.Name, "Local demo host"),
-            new Claim(ClaimTypes.Role, "Fireside.Admin")
+            new Claim(ClaimTypes.NameIdentifier, admin ? "local-demo-host" : "local-demo-voter"),
+            new Claim(ClaimTypes.Name, admin ? "Local demo host" : "Local demo voter"),
+            new Claim("tid", admin ? EntraIdentity.DemoTenant : EntraIdentity.DemoVoterTenant),
+            new Claim("oid", admin ? EntraIdentity.DemoHostObject : EntraIdentity.DemoVoterObject),
+            new Claim(ClaimTypes.Role, admin ? "Fireside.Admin" : "Fireside.Attendee")
         ], CookieAuthenticationDefaults.AuthenticationScheme);
         await context.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, new ClaimsPrincipal(identity));
-        return Results.NoContent();
-    });
+        context.Response.StatusCode = StatusCodes.Status204NoContent;
+    }
+    app.MapPost("/auth/demo-admin", (HttpContext context) => DemoSignIn(context, true));
+    app.MapPost("/auth/demo-voter", (HttpContext context) => DemoSignIn(context, false));
 }
 app.MapFiresideApi();
 app.MapHub<LiveHub>("/live");

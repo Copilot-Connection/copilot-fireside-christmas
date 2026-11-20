@@ -8,12 +8,8 @@ test('named audience and separate host share live moderated content and recover 
   await page.getByLabel('What should we call you?').fill('Browser participant');
   await page.getByRole('button', { name: 'Pull up a chair' }).click();
   await expect(page.getByText('Connected to the fireside')).toBeVisible();
-  const firstVote = page.getByRole('button', { name: /^Upvote:/ }).first();
-  const firstQuestion = (await firstVote.getAttribute('aria-label'))!.replace('Upvote: ', '');
-  await firstVote.click();
-  await expect(page.getByRole('button', { name: `Voted for: ${firstQuestion}`, exact: true })).toBeDisabled();
-  await page.reload();
-  await expect(page.getByRole('button', { name: `Voted for: ${firstQuestion}`, exact: true })).toBeDisabled();
+  await expect(page.getByText('Here to listen? You\'re all set.')).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Upvote:/ }).first()).toBeDisabled();
 
   const hostContext = await browser.newContext();
   const host = await hostContext.newPage();
@@ -31,6 +27,24 @@ test('named audience and separate host share live moderated content and recover 
   const card = host.locator('.admin-list article').filter({ has: host.getByRole('heading', { name: questionText }) });
   await card.getByRole('button', { name: 'Publish', exact: true }).click();
   await expect(page.getByRole('heading', { name: questionText })).toBeVisible();
+  await expect(page.getByRole('button', { name: `Upvote: ${questionText}`, exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: 'Sign in as demo voter' }).click();
+  await expect(page.getByRole('button', { name: `Upvote: ${questionText}`, exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: `Upvote: ${questionText}`, exact: true }).click();
+  await expect(page.getByRole('button', { name: `Voted for: ${questionText}`, exact: true })).toBeDisabled();
+  await page.reload();
+  await expect(page.getByRole('button', { name: `Voted for: ${questionText}`, exact: true })).toBeDisabled();
+  const secondContext = await browser.newContext();
+  const second = await secondContext.newPage();
+  await second.goto('/');
+  await second.getByLabel('What should we call you?').fill('Different name, same Entra identity');
+  await second.getByRole('button', { name: 'Pull up a chair' }).click();
+  await second.getByRole('button', { name: 'Sign in as demo voter' }).click();
+  await expect(second.getByRole('button', { name: `Voted for: ${questionText}`, exact: true })).toBeDisabled();
+  await second.goto('/admin');
+  await expect(second.getByRole('alert')).toContainText('configured administrative tenant');
+  await expect(second.getByRole('heading', { name: 'Keep the conversation glowing.' })).toHaveCount(0);
+  await secondContext.close();
   await card.getByRole('button', { name: 'Discuss now', exact: true }).click();
   await expect(page.locator('.current-question')).toContainText(questionText);
 
@@ -40,7 +54,7 @@ test('named audience and separate host share live moderated content and recover 
   await expect(page.locator('.current-question')).toHaveCount(0, { timeout: 20000 });
   await page.getByRole('button', { name: 'Answered' }).click();
   await expect(page.getByRole('heading', { name: questionText })).toBeVisible();
-  await expect(page.getByRole('button', { name: `Upvote: ${questionText}`, exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: `Voted for: ${questionText}`, exact: true })).toBeDisabled();
 
   await host.getByRole('button', { name: 'Add panellist', exact: true }).click();
   await editor.getByLabel('Name', { exact: true }).fill('Sample browser panellist');

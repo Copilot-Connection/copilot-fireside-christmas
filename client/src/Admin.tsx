@@ -44,12 +44,12 @@ export function Admin({ session, refreshSession }: { session: Session; refreshSe
     <ShieldCheck size={40} strokeWidth={1.5} aria-hidden="true" /><p className="eyebrow">BEHIND THE CONVERSATION</p>
     <h1>The host desk</h1><p>A little organisation makes room for a great conversation.
       Sign in with an authorised Microsoft Entra administrator account to manage the fireside.</p>
-    {session.signedIn ? <ErrorNotice message="You're signed in, but this account isn't assigned the Fireside.Admin role. Ask your Entra administrator for access." />
+    {session.signedIn ? <ErrorNotice message="You're signed in, but host access requires the configured administrative tenant and the Fireside.Admin role. Ask the event's Entra administrator for access." />
       : new URLSearchParams(location.search).has('authError') && <ErrorNotice message="Microsoft sign-in did not complete. Please try again or contact your administrator." />}
     {error && <ErrorNotice message={error} />}
     {session.demo ? <><div className="demo-explainer">Development-only demo. This local host shortcut does not exist in production.</div>
       <button className="button-primary" disabled={pending} onClick={() => void enterDemo()}>Enter demo host desk</button></>
-      : <a className="button button-primary" href="/auth/login">Sign in with Microsoft <ShieldCheck size={17} aria-hidden="true" /></a>}
+      : <a className="button button-primary" href="/auth/login?destination=admin">Sign in with Microsoft <ShieldCheck size={17} aria-hidden="true" /></a>}
     {session.signedIn && <SignOut session={session} />}
     <a className="back-link" href="/">Back to the fireside</a>
   </div>;

@@ -44,7 +44,7 @@ public sealed class BoardTests
         using var client = await site.Client();
         var board = (await client.GetFromJsonAsync<BoardView>("/api/board"))!;
         var id = board.Questions[0].Id;
-        Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsync($"/api/questions/{id}/vote", null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsync($"/api/questions/{id}/vote", null)).StatusCode);
         await Token(client);
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsync($"/api/questions/{id}/vote", null)).StatusCode);
         client.DefaultRequestHeaders.Add("Cookie", "__Host-fireside-participant=forged; fireside-participant=forged");
@@ -54,16 +54,21 @@ public sealed class BoardTests
         Assert.Equal(HttpStatusCode.BadRequest, (await client.PutAsJsonAsync("/api/participant", new NameInput(" \n "))).StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, (await client.PutAsJsonAsync("/api/participant", new NameInput("a\u0001b"))).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await client.PutAsJsonAsync("/api/participant", new NameInput("<script>alert(1)</script>"))).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsync($"/api/questions/{id}/vote", null)).StatusCode);
+        client.DefaultRequestHeaders.Add("X-Test-Role", "Attendee");
+        client.DefaultRequestHeaders.Remove("X-CSRF-TOKEN");
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsync($"/api/questions/{id}/vote", null)).StatusCode);
+        await Token(client);
         Assert.Equal(HttpStatusCode.NoContent, (await client.PostAsync($"/api/questions/{id}/vote", null)).StatusCode);
-        Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/api/admin/questions",
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync("/api/admin/questions",
             new { text = "unauthorized", visible = true, isAdmin = true })).StatusCode);
     }
 
     [Fact]
-    public async Task Concurrent_votes_are_unique_and_renaming_does_not_reset_identity()
+    public async Task Concurrent_votes_are_unique_and_other_browsers_or_names_do_not_reset_entra_identity()
     {
         await using var site = new Site();
-        using var client = await site.Client();
+        using var client = await site.Client("Attendee");
         await Token(client);
         (await client.PutAsJsonAsync("/api/participant", new NameInput("A curious person"))).EnsureSuccessStatusCode();
         var question = (await client.GetFromJsonAsync<BoardView>("/api/board"))!.Questions[0];
@@ -74,10 +79,16 @@ public sealed class BoardTests
         var after = (await client.GetFromJsonAsync<BoardView>("/api/board"))!.Questions[0];
         Assert.Equal(1, after.Votes);
         Assert.True(after.HasVoted);
-        using var secondBrowser = await site.Client();
+        using var secondBrowser = await site.Client("Attendee");
         await Token(secondBrowser);
         (await secondBrowser.PutAsJsonAsync("/api/participant", new NameInput("A new name"))).EnsureSuccessStatusCode();
         (await secondBrowser.PostAsync($"/api/questions/{question.Id}/vote", null)).EnsureSuccessStatusCode();
+        Assert.Equal(1, (await client.GetFromJsonAsync<BoardView>("/api/board"))!.Questions[0].Votes);
+        using var otherIdentity = await site.Client("Attendee");
+        otherIdentity.DefaultRequestHeaders.Add("X-Test-ObjectId", EntraIdentity.DemoVoterObject);
+        await Token(otherIdentity);
+        (await otherIdentity.PutAsJsonAsync("/api/participant", new NameInput("Same display name"))).EnsureSuccessStatusCode();
+        (await otherIdentity.PostAsync($"/api/questions/{question.Id}/vote", null)).EnsureSuccessStatusCode();
         Assert.Equal(2, (await client.GetFromJsonAsync<BoardView>("/api/board"))!.Questions[0].Votes);
     }
 
@@ -100,7 +111,7 @@ public sealed class BoardTests
         admin.DefaultRequestHeaders.TryAddWithoutValidation("If-Match", $"\"{next.Revision}\"");
         (await admin.PutAsJsonAsync($"/api/admin/questions/{question.Id}",
             new QuestionInput(question.Text, question.Category, false, false, 0))).EnsureSuccessStatusCode();
-        using var audience = await site.Client();
+        using var audience = await site.Client("Attendee");
         var publicBoard = (await audience.GetFromJsonAsync<BoardView>("/api/board"))!;
         Assert.Null(publicBoard.CurrentQuestionId);
         Assert.Empty(publicBoard.Questions);
@@ -113,7 +124,7 @@ public sealed class BoardTests
     public async Task Paused_or_answered_questions_reject_votes_and_question_deletion_cascades()
     {
         await using var site = new Site();
-        using var voter = await site.Client();
+        using var voter = await site.Client("Attendee");
         await Token(voter);
         (await voter.PutAsJsonAsync("/api/participant", new NameInput("Test voter"))).EnsureSuccessStatusCode();
         var question = (await voter.GetFromJsonAsync<BoardView>("/api/board"))!.Questions[0];
@@ -171,6 +182,40 @@ public sealed class BoardTests
     }
 
     [Fact]
+    public async Task External_tenant_accounts_can_vote_but_external_admin_roles_cannot_manage_the_event()
+    {
+        await using var site = new Site();
+        using var external = await site.Client("Fireside.Admin");
+        external.DefaultRequestHeaders.Add("X-Test-Tenant", EntraIdentity.DemoVoterTenant);
+        await Token(external);
+        var session = await external.GetFromJsonAsync<JsonElement>("/api/session");
+        Assert.False(session.GetProperty("isAdmin").GetBoolean());
+        Assert.True(session.GetProperty("canVote").GetBoolean());
+        Assert.Equal(HttpStatusCode.Forbidden, (await external.GetAsync("/api/admin/board")).StatusCode);
+        var question = (await external.GetFromJsonAsync<BoardView>("/api/board"))!.Questions[0];
+        Assert.Equal(HttpStatusCode.Unauthorized, (await external.PostAsync($"/api/questions/{question.Id}/vote", null)).StatusCode);
+        (await external.PutAsJsonAsync("/api/participant", new NameInput("Guest from another organisation"))).EnsureSuccessStatusCode();
+        (await external.PostAsync($"/api/questions/{question.Id}/vote", null)).EnsureSuccessStatusCode();
+        Assert.Equal(HttpStatusCode.Forbidden, (await external.PostAsJsonAsync("/api/admin/questions",
+            new QuestionInput("Cannot publish", "", true, false, 0))).StatusCode);
+    }
+
+    [Theory]
+    [InlineData("not-a-guid", EntraIdentity.DemoVoterObject)]
+    [InlineData(EntraIdentity.DemoVoterTenant, "not-a-guid")]
+    [InlineData("9188040d-6c67-4c5b-b112-36a304b66dad", EntraIdentity.DemoVoterObject)]
+    public async Task Malformed_or_personal_microsoft_identity_is_not_a_voter(string tenant, string person)
+    {
+        await using var site = new Site();
+        using var client = await site.Client("Attendee");
+        client.DefaultRequestHeaders.Add("X-Test-Tenant", tenant);
+        client.DefaultRequestHeaders.Add("X-Test-ObjectId", person);
+        await Token(client);
+        var question = (await client.GetFromJsonAsync<BoardView>("/api/board"))!.Questions[0];
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsync($"/api/questions/{question.Id}/vote", null)).StatusCode);
+    }
+
+    [Fact]
     public void Demo_mode_is_rejected_outside_local_development()
     {
         using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
@@ -202,6 +247,7 @@ public sealed class Site : WebApplicationFactory<Program>
         builder.UseSetting("Database:Provider", "Sqlite");
         builder.UseSetting("ConnectionStrings:Fireside", $"Data Source={Path.Combine(directory, "test.db")};Pooling=False;Default Timeout=10");
         builder.UseSetting("DataProtection:KeyPath", Path.Combine(directory, "keys"));
+        builder.UseSetting("AzureAd:TenantId", EntraIdentity.DemoTenant);
         builder.ConfigureServices(services =>
         {
             services.AddAuthentication(options =>
@@ -247,8 +293,11 @@ public sealed class TestAuth(IOptionsMonitor<AuthenticationSchemeOptions> option
     {
         var role = Request.Headers["X-Test-Role"].ToString();
         if (string.IsNullOrEmpty(role)) return Task.FromResult(AuthenticateResult.NoResult());
-        var identity = new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, "test-user"),
-            new Claim(ClaimTypes.Name, "Test host"), new Claim(ClaimTypes.Role, role)], "Test");
+        var tenant = Request.Headers["X-Test-Tenant"].FirstOrDefault() ?? EntraIdentity.DemoTenant;
+        var person = Request.Headers["X-Test-ObjectId"].FirstOrDefault() ?? EntraIdentity.DemoHostObject;
+        var identity = new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, $"{tenant}:{person}"),
+            new Claim(ClaimTypes.Name, "Test host"), new Claim(ClaimTypes.Role, role),
+            new Claim("tid", tenant), new Claim("oid", person)], "Test");
         return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), "Test")));
     }
 }

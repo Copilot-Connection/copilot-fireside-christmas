@@ -82,8 +82,8 @@ function NameForm({ session, onSaved, initial = '' }: { session: Session; onSave
       </button>
     </div>
     {error && <ErrorNotice message={error} />}
-    <p className="fine-print">No account needed. An essential browser cookie remembers your name and votes for 30 days.
-      Your name is not shown to other participants.</p>
+    <p className="fine-print">No account needed to view. To upvote, sign in with a work or school Microsoft Entra account.
+      An essential cookie remembers your display name for 30 days; your name is not public.</p>
   </form>;
 }
 
@@ -115,6 +115,16 @@ function Audience({ session, refreshSession }: { session: Session; refreshSessio
   const [pending, setPending] = useState<string | null>(null);
   const [voteError, setVoteError] = useState('');
   const [editName, setEditName] = useState(false);
+  useEffect(() => { void refresh(); }, [session.canVote, refresh]);
+  async function demoVoter() {
+    setPending('sign-in');
+    setVoteError('');
+    try {
+      await write('/auth/demo-voter', 'POST', session.csrfToken);
+      await refreshSession();
+    } catch (error) { setVoteError(errorMessage(error)); }
+    finally { setPending(null); }
+  }
   async function vote(id: string) {
     setPending(id);
     setVoteError('');
@@ -134,7 +144,11 @@ function Audience({ session, refreshSession }: { session: Session; refreshSessio
       <span className={`connection ${connection === 'Live' ? 'connected' : ''}`} role="status">
         <span className="status-dot" /> {connection === 'Live' ? 'Connected to the fireside' : connection}
       </span>
-      <button className="text-button" onClick={() => setEditName(!editName)}>Hi, {session.participantName} <span>Change name</span></button>
+      <div className="audience-account"><button className="text-button" onClick={() => setEditName(!editName)}>Hi, {session.participantName} <span>Change name</span></button>
+        {session.signedIn && <form action="/auth/logout" method="post">
+          <input type="hidden" name="__RequestVerificationToken" value={session.csrfToken} />
+          <button className="text-button" type="submit">Sign out of Microsoft</button>
+        </form>}</div>
     </div>
     {editName && <div className="name-edit"><NameForm session={session} initial={session.participantName ?? ''}
       onSaved={async () => { await refreshSession(); setEditName(false); }} /></div>}
@@ -148,6 +162,7 @@ function Audience({ session, refreshSession }: { session: Session; refreshSessio
         <p>A good conversation starts<br />with a little curiosity.</p><span>MAKE YOUR VOICE HEARD</span></div>
     </section>
     {error && <ErrorNotice message={`${error} The board may be out of date.`} />}
+    {new URLSearchParams(location.search).has('authError') && <ErrorNotice message="Microsoft sign-in did not complete. Try again with a work or school account, or contact your organisation's administrator." />}
     <div className="audience-grid">
       <section className="questions-section" aria-labelledby="questions-title">
         {current && <article className="current-question">
@@ -160,6 +175,13 @@ function Audience({ session, refreshSession }: { session: Session; refreshSessio
           <span className={`pill ${board.votingOpen ? 'pill-live' : ''}`}>{board.votingOpen ? 'Voting open' : 'Voting paused'}</span>
         </div>
         <p className="section-description">Give the questions you love a little lift. The host chooses what comes next.</p>
+        {!session.canVote && <div className="voter-signin">
+          <ShieldCheck size={22} aria-hidden="true" /><div><strong>Here to listen? You're all set.</strong>
+            <p>To upvote, sign in with a work or school Microsoft Entra account from any organisation.</p>
+            {session.demo ? <><span className="fine-print">Local demo only: this simulates a signed-in audience account.</span>
+              <button disabled={pending !== null} onClick={() => void demoVoter()}>Sign in as demo voter</button></>
+              : <a className="button button-primary" href="/auth/login">Sign in with Microsoft to vote</a>}</div>
+        </div>}
         <div className="tabs" aria-label="Filter questions">
           <button aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>Up next <span>{board.questions.filter(q => !q.answered).length}</span></button>
           <button aria-pressed={filter === 'mine'} onClick={() => setFilter('mine')}>My votes</button>
@@ -168,13 +190,13 @@ function Audience({ session, refreshSession }: { session: Session; refreshSessio
         {voteError && <ErrorNotice message={voteError} />}
         <div className="question-list">
           {questions.length ? questions.map(question => <QuestionCard key={question.id} question={question}
-            current={question.id === board.currentQuestionId} votingOpen={board.votingOpen}
+            current={question.id === board.currentQuestionId} votingOpen={board.votingOpen && session.canVote}
             pending={pending !== null} onVote={() => void vote(question.id)} />)
             : <div className="empty-state"><Flame size={24} aria-hidden="true" /><h3>{filter === 'mine' ? 'Your favourites live here.' : 'Room for more conversation.'}</h3>
               <p>{filter === 'mine' ? 'Upvote a question to save it to this view.' : 'The host will share questions here when they are ready.'}</p></div>}
         </div>
-        <p className="fine-print voting-note"><ShieldCheck size={15} aria-hidden="true" /> One vote per question, per browser participant.
-          Clearing cookies or switching browsers creates a new participant.</p>
+        <p className="fine-print voting-note"><ShieldCheck size={15} aria-hidden="true" /> One vote per question, per organisational Entra identity.
+          Changing your name, clearing cookies or using another browser does not reset votes for that identity.</p>
       </section>
       <aside className="panel-section" aria-labelledby="panel-title">
         <p className="eyebrow">GOOD COMPANY</p>
@@ -219,15 +241,20 @@ export function Surface({ title, children }: { title: string; children: ReactNod
 export function Privacy() {
   return <article className="privacy-page">
     <p className="eyebrow">A LITTLE TRANSPARENCY</p><h1>Privacy &amp; participation</h1>
-    <p>You don't need a Microsoft account to join the audience. Set a display name to participate.
-      Your name is stored in a protected, HTTP-only essential cookie, not in the vote database or a public attendee list.</p>
-    <h2>What we store</h2><p>The participant cookie lasts 30 days. The database records a random participant ID
-      against each question you upvote. It does not record your display name, email or Microsoft identity.
-      Changing your name keeps your votes. Clearing cookies loses your participant identity and creates a new one.</p>
-    <h2>Voting is lightweight, not identity verification</h2><p>The server allows one vote per question per participant cookie.
-      A different browser or cleared cookie can vote again. This is a community conversation, not an election.</p>
-    <h2>Administrators</h2><p>The host desk uses Microsoft Entra sign-in and requires an explicitly assigned
-      Fireside.Admin application role. A signed-in session lasts up to two hours. Microsoft handles administrator sign-in.</p>
+    <p>You don't need a Microsoft account to view the audience page. Set a display name to enter.
+      Upvoting requires a work or school Microsoft Entra account from any organisation.
+      Your display name is stored in a protected, HTTP-only essential cookie, not in the vote database or a public attendee list.</p>
+    <h2>What we store</h2><p>The display-name cookie lasts 30 days. When you sign in, a separate protected authentication
+      cookie holds identity claims for up to two hours. The vote database stores a stable hash derived from your Entra
+      tenant and user object identifiers against each question you upvote; it does not store raw identifiers,
+      your display name or email. This is pseudonymous personal data, not anonymous data.</p>
+    <h2>Voting follows your account, not your browser</h2><p>The server allows one vote per question per organisational
+      Entra tenant/user identity. Signing back in after clearing cookies or on another browser keeps that identity's
+      votes. Different organisational accounts or guest identities may represent the same human; the app does not
+      claim one vote per verified human. Some organisations require administrator consent before sign-in.</p>
+    <h2>Administrators</h2><p>The host desk requires both the configured host tenant and an explicitly assigned
+      Fireside.Admin application role. A role assigned in another tenant does not grant host access.
+      Microsoft handles sign-in for voters and administrators.</p>
     <h2>Retention and support</h2><p>Event hosts control the questions and vote records and must publish their contact
       and event retention policy before going live. Removing a question also removes its votes.
       Hosting services may retain operational logs according to the host's Azure settings; this application does not

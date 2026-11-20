@@ -16,8 +16,7 @@ public sealed class ParticipantIdentity(IDataProtectionProvider provider, IWebHo
         try
         {
             var participant = JsonSerializer.Deserialize<Participant>(protector.Unprotect(value));
-            return participant is { Id: var id } && id != Guid.Empty &&
-                participant.Expires > DateTimeOffset.UtcNow ? participant : null;
+            return participant is not null && participant.Expires > DateTimeOffset.UtcNow ? participant : null;
         }
         catch (CryptographicException) { return null; }
         catch (JsonException) { return null; }
@@ -25,8 +24,7 @@ public sealed class ParticipantIdentity(IDataProtectionProvider provider, IWebHo
 
     public Participant Set(HttpContext context, string name)
     {
-        var participant = new Participant(Read(context)?.Id ?? Guid.NewGuid(), name,
-            DateTimeOffset.UtcNow.AddDays(30));
+        var participant = new Participant(name, DateTimeOffset.UtcNow.AddDays(30));
         context.Response.Cookies.Append(cookieName, protector.Protect(JsonSerializer.Serialize(participant)),
             new CookieOptions
             {

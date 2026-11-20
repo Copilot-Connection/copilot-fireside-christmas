@@ -56,7 +56,7 @@ public sealed class FiresideDb(DbContextOptions<FiresideDb> options) : DbContext
     }
 }
 
-public sealed record Participant(Guid Id, string Name, DateTimeOffset Expires);
+public sealed record Participant(string Name, DateTimeOffset Expires);
 public sealed record NameInput(string? Name);
 public sealed record BoardInput(string? Title, string? Subtitle, bool VotingOpen, Guid? CurrentQuestionId);
 public sealed record PanellistInput(string? Name, string? Role, string? Bio, bool Visible, int SortOrder);

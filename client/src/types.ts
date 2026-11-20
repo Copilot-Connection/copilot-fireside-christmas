@@ -10,6 +10,6 @@ export type Board = {
   revision: number; panellists: Panellist[]; questions: Question[];
 };
 export type Session = {
-  participantName: string | null; isAdmin: boolean; signedIn: boolean;
+  participantName: string | null; isAdmin: boolean; signedIn: boolean; canVote: boolean;
   adminName: string | null; demo: boolean; csrfToken: string;
 };
