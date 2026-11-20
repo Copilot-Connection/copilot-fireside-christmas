@@ -5,6 +5,7 @@ import { ApiError, errorMessage, write } from './api';
 import { useBoard } from './useBoard';
 import { ErrorNotice, Loading, PanellistPhoto, Surface } from './App';
 import { DiscussionTimer } from './DiscussionTimer';
+import { Scoreboard } from './Scoreboard';
 
 type PersonDraft = Omit<Panellist, 'id' | 'photoUrl'>;
 type QuestionDraft = Omit<Question, 'id' | 'score' | 'myScore'>;
@@ -22,6 +23,10 @@ export function Admin({ session, refreshSession }: { session: Session; refreshSe
   const [artwork, setArtwork] = useState<{ file: File | null; description: string; revision: number } | null>(null);
   const [photo, setPhoto] = useState<{ person: Panellist; file: File | null; revision: number } | null>(null);
   const [timings, setTimings] = useState<Pick<Board, 'speakerSeconds' | 'groupSeconds' | 'revision'> | null>(null);
+  const [scoreEdit, setScoreEdit] = useState<{
+    questionId: string; speakerId: string; speakerName: string; question: string;
+    points: string; reason: string; revision: number;
+  } | null>(null);
 
   async function mutation(path: string, method: string, body?: unknown, revision = board?.revision) {
     if (pending) return false;
@@ -135,6 +140,32 @@ export function Admin({ session, refreshSession }: { session: Session; refreshSe
         <p className="fine-print">Reaching zero does not advance the question or change voting mode. Stopping a group timer keeps voting off.</p>
       </div>}
     </Surface>
+    <details className="admin-surface speaker-scores">
+      <summary><h2>Speaker scores <small>{board.scoreboardVisible ? 'Visible to audience' : 'Hidden from audience'}</small></h2></summary>
+      <div className="row-between"><p>{board.scoreboardVisible ? 'The audience scoreboard is visible.' : 'The audience scoreboard is hidden.'}</p>
+        <button disabled={pending} onClick={() => void mutation('/api/admin/scoreboard', 'PUT', { visible: !board.scoreboardVisible })}>
+          {board.scoreboardVisible ? 'Hide scoreboard' : 'Show scoreboard'}</button>
+      </div>
+      <p className="section-description">Reactions belong to the speaker active when they were cast. Edits record an adjustment, never change individual votes.
+        New reactions continue to add to the adjusted score.</p>
+      {scoreEdit && <form className="editor-form score-edit-form" onSubmit={async event => {
+        event.preventDefault();
+        if (await mutation(`/api/admin/questions/${scoreEdit.questionId}/scores/${scoreEdit.speakerId}`,
+          'PUT', { points: Number(scoreEdit.points), reason: scoreEdit.reason }, scoreEdit.revision)) setScoreEdit(null);
+      }}>
+        <h3>Edit {scoreEdit.speakerName}'s points</h3><p>{scoreEdit.question}</p>
+        <label>Points<input autoFocus type="number" step={1} required min={-1000000000} max={1000000000} value={scoreEdit.points}
+          onChange={event => setScoreEdit({ ...scoreEdit, points: event.target.value })} /></label>
+        <label>Reason for change<input required maxLength={200} value={scoreEdit.reason}
+          onChange={event => setScoreEdit({ ...scoreEdit, reason: event.target.value })} /></label>
+        <FormActions pending={pending} cancel={() => setScoreEdit(null)} />
+        {scoreEdit.revision !== board.revision && <p className="fine-print">The board changed. Cancel and reopen to review the latest score.</p>}
+      </form>}
+      {board.scoreboard && <Scoreboard scores={board.scoreboard} people={board.panellists} onEdit={(question, speaker, points) => setScoreEdit({
+        questionId: question.id, speakerId: speaker.id, speakerName: speaker.name, question: question.text,
+        points: String(points), reason: '', revision: board.revision,
+      })} />}
+    </details>
     <Surface title="Landing image">
       <p className="section-description">Shown on arrival and whenever no question is being discussed. Uploads are public and stored durably in the event database.</p>
       <img className="admin-artwork" src={board.landingImageUrl} alt={board.landingImageDescription} />

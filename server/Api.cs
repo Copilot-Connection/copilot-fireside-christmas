@@ -45,6 +45,33 @@ public static class Api
             .RequireAuthorization("Voter").RequireRateLimiting("voting");
 
         var admin = app.MapGroup("/api/admin").RequireAuthorization("Admin");
+        admin.MapPut("/scoreboard", async (ScoreboardInput input, HttpContext context, FiresideDb db, LiveUpdates live) =>
+            await Mutate(context, db, live, board =>
+            {
+                board.ScoreboardVisible = input.Visible;
+                return Task.FromResult<IResult?>(null);
+            }));
+        admin.MapPut("/questions/{questionId:guid}/scores/{speakerId:guid}",
+            async (Guid questionId, Guid speakerId, ScoreInput input, HttpContext context, FiresideDb db, LiveUpdates live, TimeProvider clock) =>
+            await Mutate(context, db, live, async _ =>
+            {
+                if (input.Points is < -1000000000 or > 1000000000 || !InputRules.Text(input.Reason?.Trim(), 1, 200))
+                    return Invalid("Set points between -1000000000 and 1000000000 and give a reason (1-200 characters).");
+                var actor = EntraIdentity.VoterKey(context.User);
+                if (actor is null) return Results.Forbid();
+                if (!await db.Questions.AnyAsync(q => q.Id == questionId, context.RequestAborted) ||
+                    !await db.Panellists.AnyAsync(p => p.Id == speakerId, context.RequestAborted))
+                    return Results.NotFound();
+                var reactions = await db.Votes.Where(v => v.QuestionId == questionId && v.SpeakerId == speakerId)
+                    .SumAsync(v => (long?)v.Delta, context.RequestAborted) ?? 0;
+                var adjustments = await db.ScoreAdjustments.Where(s => s.QuestionId == questionId && s.SpeakerId == speakerId)
+                    .SumAsync(s => (long?)s.Delta, context.RequestAborted) ?? 0;
+                var delta = input.Points - reactions - adjustments;
+                if (delta == 0) return Invalid("Enter a different total to record an adjustment.");
+                db.ScoreAdjustments.Add(new ScoreAdjustment { QuestionId = questionId, SpeakerId = speakerId,
+                    Delta = delta, ActorId = actor.Value, ChangedAt = clock.GetUtcNow(), Reason = input.Reason!.Trim() });
+                return null;
+            }, serializable: true));
         admin.MapGet("/board", async (FiresideDb db, TimeProvider clock, CancellationToken token) =>
             Results.Ok(await Snapshot(db, true, token, clock)));
         admin.MapGet("/panellists/{id:guid}/photo", async (Guid id, FiresideDb db, CancellationToken token) =>
@@ -238,7 +265,7 @@ public static class Api
         {
             b.Title, b.Subtitle, b.VotingOpen, b.CurrentQuestionId, b.Revision,
             b.LandingImageRevision, b.LandingImageDescription, b.SpeakerSeconds, b.GroupSeconds,
-            b.GroupDiscussion, b.TimerStartedAt, b.TimerDurationSeconds
+            b.GroupDiscussion, b.TimerStartedAt, b.TimerDurationSeconds, b.ScoreboardVisible
         }).SingleAsync(token);
         var panellists = await db.Panellists.AsNoTracking().Where(p => admin || p.Visible)
             .OrderBy(p => p.SortOrder).ThenBy(p => p.Name)
@@ -248,7 +275,8 @@ public static class Api
         var questions = await db.Questions.AsNoTracking().Where(q => admin || q.Visible)
             .OrderBy(q => q.SortOrder).ThenBy(q => q.Id)
             .Select(q => new QuestionView(q.Id, q.Text, q.Category, q.Visible, q.Answered, q.SortOrder,
-                db.Votes.Where(v => v.QuestionId == q.Id).Sum(v => (long?)v.Delta) ?? 0,
+                (db.Votes.Where(v => v.QuestionId == q.Id).Sum(v => (long?)v.Delta) ?? 0) +
+                    (db.ScoreAdjustments.Where(s => s.QuestionId == q.Id).Sum(s => (long?)s.Delta) ?? 0),
                 voter == null ? null : db.Votes.Where(v => v.QuestionId == q.Id && v.ParticipantId == voter)
                     .Sum(v => (long?)v.Delta) ?? 0,
                 admin || q.Speaker != null && q.Speaker.Visible ? q.SpeakerId : null))
@@ -261,6 +289,31 @@ public static class Api
             SpeakerIds = orders.Where(s => s.QuestionId == q.Id && visiblePeople.Contains(s.PanellistId))
                 .Select(s => s.PanellistId).Concat(panellists.Select(p => p.Id)).Distinct().ToArray()
         }).ToList();
+        ScoreboardView? scoreboard = null;
+        if (admin || board.ScoreboardVisible)
+        {
+            var votes = await db.Votes.AsNoTracking().Where(v => admin || v.Question.Visible)
+                .GroupBy(v => new { v.QuestionId, v.SpeakerId })
+                .Select(g => new { g.Key.QuestionId, g.Key.SpeakerId, Points = g.Sum(v => (long)v.Delta) }).ToListAsync(token);
+            var adjustments = await db.ScoreAdjustments.AsNoTracking().Where(s => admin || s.Question.Visible)
+                .GroupBy(s => new { s.QuestionId, s.SpeakerId })
+                .Select(g => new { g.Key.QuestionId, g.Key.SpeakerId, Points = g.Sum(s => s.Delta) }).ToListAsync(token);
+            var people = panellists.Select(p => (p.Id, p.Name, Removed: false)).ToList();
+            if (admin)
+                people.AddRange(votes.Where(v => v.SpeakerId.HasValue).Select(v => v.SpeakerId!.Value)
+                    .Concat(adjustments.Select(s => s.SpeakerId)).Distinct().Where(id => !visiblePeople.Contains(id))
+                    .Select(id => (id, "Removed speaker", true)));
+            var totals = votes.Where(v => v.SpeakerId.HasValue).ToDictionary(v => (v.QuestionId, v.SpeakerId!.Value), v => v.Points);
+            foreach (var adjustment in adjustments)
+                totals[(adjustment.QuestionId, adjustment.SpeakerId)] =
+                    totals.GetValueOrDefault((adjustment.QuestionId, adjustment.SpeakerId)) + adjustment.Points;
+            var rows = questions.Select(q => new QuestionScores(q.Id, q.Text,
+                people.Select(p => new SpeakerPoints(p.Id, totals.GetValueOrDefault((q.Id, p.Id)))).ToArray(),
+                votes.Where(v => v.QuestionId == q.Id && v.SpeakerId == null).Sum(v => v.Points))).ToArray();
+            scoreboard = new(people.Select(p => new SpeakerTotal(p.Id, p.Name,
+                rows.Sum(q => q.Scores.Single(s => s.SpeakerId == p.Id).Points), p.Removed))
+                .OrderByDescending(p => p.Points).ThenBy(p => p.Name).ThenBy(p => p.Id).ToArray(), rows);
+        }
         await transaction.CommitAsync(token);
         return new(board.Title, board.Subtitle, board.VotingOpen,
             questions.Any(q => q.Id == board.CurrentQuestionId) ? board.CurrentQuestionId : null,
@@ -268,7 +321,7 @@ public static class Api
             board.LandingImageRevision is { } version ? $"/api/landing-image?v={version}" : LandingImages.DefaultUrl,
             board.LandingImageDescription, board.LandingImageRevision is not null,
             board.SpeakerSeconds, board.GroupSeconds, board.GroupDiscussion,
-            board.TimerStartedAt, board.TimerDurationSeconds, clock.GetUtcNow());
+            board.TimerStartedAt, board.TimerDurationSeconds, clock.GetUtcNow(), board.ScoreboardVisible, scoreboard);
     }
 
     private static async Task<IResult> Vote(Guid id, ReactionInput input, HttpContext context, FiresideDb db,
@@ -287,11 +340,13 @@ public static class Api
             var existing = await db.Votes.AsNoTracking().SingleOrDefaultAsync(v => v.Id == input.RequestId, token);
             if (existing is not null) return SameReaction(existing, id, voter.Value, delta)
                 ? Results.NoContent() : Conflict();
-            var votingOpen = await db.Boards.AsNoTracking().Select(b => b.VotingOpen && !b.GroupDiscussion).SingleAsync(token);
-            var eligible = votingOpen && await db.Questions
-                .AnyAsync(q => q.Id == id && q.Visible && !q.Answered, token);
-            if (!eligible) return Results.Problem("Voting is closed for this question.", statusCode: 409);
-            db.Votes.Add(new Vote { Id = input.RequestId, QuestionId = id, ParticipantId = voter.Value, Delta = delta });
+            var board = await db.Boards.AsNoTracking().Select(b => new { b.VotingOpen, b.GroupDiscussion, b.CurrentQuestionId }).SingleAsync(token);
+            var question = await db.Questions.Where(q => q.Id == id && q.Visible && !q.Answered)
+                .Select(q => new { q.SpeakerId, SpeakerVisible = q.Speaker != null && q.Speaker.Visible }).SingleOrDefaultAsync(token);
+            if (!board.VotingOpen || board.GroupDiscussion || question is null)
+                return Results.Problem("Voting is closed for this question.", statusCode: 409);
+            db.Votes.Add(new Vote { Id = input.RequestId, QuestionId = id, ParticipantId = voter.Value, Delta = delta,
+                SpeakerId = board.CurrentQuestionId == id && question.SpeakerVisible ? question.SpeakerId : null });
             await db.SaveChangesAsync(token);
             await transaction.CommitAsync(token);
         }
@@ -379,17 +434,23 @@ public static class Api
         vote.QuestionId == question && vote.ParticipantId == voter && vote.Delta == delta;
 
     private static async Task<IResult> Mutate(HttpContext context, FiresideDb db, LiveUpdates live,
-        Func<Board, Task<IResult?>> change)
+        Func<Board, Task<IResult?>> change, bool serializable = false)
     {
         if (!long.TryParse(context.Request.Headers.IfMatch.ToString().Trim('"'),
             NumberStyles.None, CultureInfo.InvariantCulture, out var expected))
             return Results.Problem("A board revision is required. Refresh and retry.", statusCode: 428);
-        var board = await db.Boards.SingleAsync(context.RequestAborted);
-        if (board.Revision != expected) return Conflict();
-        var invalid = await change(board);
-        if (invalid is not null) return invalid;
-        board.Revision++;
-        try { await db.SaveChangesAsync(context.RequestAborted); }
+        try
+        {
+            await using var transaction = serializable
+                ? await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, context.RequestAborted) : null;
+            var board = await db.Boards.SingleAsync(context.RequestAborted);
+            if (board.Revision != expected) return Conflict();
+            var invalid = await change(board);
+            if (invalid is not null) return invalid;
+            board.Revision++;
+            await db.SaveChangesAsync(context.RequestAborted);
+            if (transaction is not null) await transaction.CommitAsync(context.RequestAborted);
+        }
         catch (DbUpdateConcurrencyException) { return Conflict(); }
         catch (Exception exception) when (IsContention(exception)) { return Conflict(); }
         await live.Notify();

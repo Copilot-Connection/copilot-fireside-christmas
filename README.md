@@ -47,6 +47,25 @@ workflows have been created.** Scaffolding and provisioning require separate app
   Use **Start speaker timer** when ready. Edit a question and use the up/down arrows
   under **Speaker order for this question** to save its own order. New panellists
   append to existing orders; hidden panellists are skipped, not exposed publicly.
+- The collapsible **Speaker scores** section on the host desk starts closed to
+  save space; its summary shows whether the audience scoreboard is visible.
+  Expand it to see each speaker's points for each question
+  and their total. New reactions are permanently credited to the published speaker
+  active on that question when the server accepts them; switching speakers never
+  moves earlier points. Reactions without an active published speaker remain
+  explicitly unassigned. Deleted speakers retain their historical attribution in
+  the host desk as “Removed speaker”; their scores are not published to audiences.
+- Hosts can edit a speaker/question total with a required reason. The server stores
+  an additive adjustment with the actor's pseudonymous Entra key and server time,
+  rather than rewriting individual votes. New reactions add to the adjusted total;
+  personal contribution history remains based only on that person's reactions.
+  Edits accept integer totals between -1,000,000,000 and 1,000,000,000.
+- The audience **Scoreboard** tab starts hidden. **Show scoreboard / Hide scoreboard**
+  applies to every audience connection live. Hidden snapshots omit scoreboard data
+  server-side, not just its controls. Hiding it moves viewers back to Live. Published
+  scoreboards contain only published questions and panellists.
+  Speaker portraits appear alongside their names in totals and per-question rows,
+  using the same uploaded photos as the live view.
 - Shared timer lengths default to 120 seconds for speakers and 300 for group
   discussions, configurable from 5 to 3600 seconds. **Start speaker timer** selects
   that question and starts/restarts its assigned speaker's timer. **Start group
@@ -137,6 +156,9 @@ repeatable scoring, matching reactions in independent browsers, reduced motion,
 one-third-height animation end state, image upload/reset, keyboard tabs, viewport
 fit, voter denial at the host desk, speaker photo uploads/selection, separate
 speaker/group clocks, direct group-mode vote rejection and reconnect recovery.
+Scoreboard checks cover cast-time attribution, audited adjustments, untouched
+personal histories, hidden-data filtering, the one-time reset guard, collapsible
+host controls, portrait rendering, and live show/hide across independent viewers.
 Browser scenarios modify the demo event. Use a disposable local database rather
 than an event someone is using. Set `FIRESIDE_BASE_URL` to target an isolated
 instance (for example `http://127.0.0.1:5190`); the default remains port 5180.
@@ -280,12 +302,18 @@ schema upgrade system; do not rerun it as an upgrade mechanism.
 **Upgrading an existing database from the previous single-vote release:** stop
 writes and take a verified database backup. Run the scripts in `server/Schema`
 for your provider, **002-landing-image, 003-repeatable-reactions, then
-004-speakers-timers, then 005-speaker-order**, exactly
-once, using an operator identity. They add the public artwork fields and convert
-each existing vote into a +1 ledger entry without changing question totals.
-If 002/003 were already applied (the repeatable-reaction release), run **004 then 005**;
+004-speakers-timers, 005-speaker-order, then 006-speaker-scoreboard**, exactly
+once, using an operator identity. 002 adds artwork fields; 003 first converts old
+single votes into +1 ledger entries. 006 performs the separately requested reset below.
+If 002/003 were already applied (the repeatable-reaction release), run **004, 005, then 006**;
 it adds portraits, nullable speaker assignments and shared timer state without
-changing existing content or scores. If 004 is already applied, run **005 only**.
+changing event content. If 004/005 are already applied, run **006 only**.
+**006 deliberately clears every pre-scoreboard vote, at the user's explicit
+request to start points at zero.** It does not change event settings, questions,
+speakers, portraits, orders or timers. Apply it once, offline, after a verified
+backup and before accepting new votes. A stored initialization timestamp and schema guards prevent rerunning
+the reset after activation; never use it as an ongoing reset command. New votes
+and subsequent score adjustments are preserved during normal startup/restarts.
 Do not run these scripts on a freshly initialized current schema. The SQLite
 upgrade has been exercised against the persistent demo database with row-count,
 per-question total, integrity and foreign-key checks. The SQL Server scripts

@@ -16,6 +16,14 @@ async function hostDesk(page: Page) {
   await expect(page.getByRole('heading', { name: 'Keep the conversation glowing.' })).toBeVisible();
 }
 
+async function adminWrite(host: Page, url: string, method: string, data?: unknown) {
+  const board: Board = await (await host.request.get('/api/admin/board')).json();
+  const session = await (await host.request.get('/api/session')).json();
+  const response = await host.request.fetch(url, { method, data,
+    headers: { 'X-CSRF-TOKEN': session.csrfToken, 'If-Match': `"${board.revision}"` } });
+  expect(response.ok(), await response.text()).toBe(true);
+}
+
 test('repeatable scores and matching transient reactions reach independent browsers', async ({ browser, page }) => {
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -208,13 +216,6 @@ test('hosts assign uploaded speaker portraits and synchronise speaker and non-vo
   const second = await secondContext.newPage();
   let personId: string | null = null;
   let questionId: string | null = null;
-  async function adminWrite(url: string, method: string, data?: unknown) {
-    const board: Board = await (await host.request.get('/api/admin/board')).json();
-    const session = await (await host.request.get('/api/session')).json();
-    const response = await host.request.fetch(url, { method, data,
-      headers: { 'X-CSRF-TOKEN': session.csrfToken, 'If-Match': `"${board.revision}"` } });
-    expect(response.ok()).toBe(true);
-  }
   try {
     await join(page, 'Speaker timer viewer');
     await page.getByRole('button', { name: 'Sign in as demo voter' }).click();
@@ -314,11 +315,100 @@ test('hosts assign uploaded speaker portraits and synchronise speaker and non-vo
     await expect(page.locator('.current-question button')).toHaveCount(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   } finally {
-    if (questionId) await adminWrite(`/api/admin/questions/${questionId}`, 'DELETE');
-    if (personId) await adminWrite(`/api/admin/panellists/${personId}`, 'DELETE');
+    if (questionId) await adminWrite(host, `/api/admin/questions/${questionId}`, 'DELETE');
+    if (personId) await adminWrite(host, `/api/admin/panellists/${personId}`, 'DELETE');
     const latest: Board = await (await host.request.get('/api/admin/board')).json();
     if (latest.speakerSeconds === 30 && latest.groupSeconds === 60)
-      await adminWrite('/api/admin/timing', 'PUT', { speakerSeconds: original.speakerSeconds, groupSeconds: original.groupSeconds });
+      await adminWrite(host, '/api/admin/timing', 'PUT', { speakerSeconds: original.speakerSeconds, groupSeconds: original.groupSeconds });
+    await secondContext.close();
+    await hostContext.close();
+  }
+});
+
+test('host score edits persist and scoreboard visibility updates independent viewers live', async ({ browser, page }, testInfo) => {
+  test.setTimeout(60000);
+  const hostContext = await browser.newContext();
+  const secondContext = await browser.newContext();
+  const host = await hostContext.newPage();
+  host.setDefaultTimeout(10000);
+  const second = await secondContext.newPage();
+  await hostDesk(host);
+  const disclosure = host.locator('.speaker-scores > summary');
+  await expect(host.getByRole('button', { name: /^(Show|Hide) scoreboard$/ })).toBeHidden();
+  await host.locator('.speaker-scores').screenshot({ path: testInfo.outputPath('host-scores-collapsed.png') });
+  await disclosure.focus();
+  await host.keyboard.press('Enter');
+  await expect(host.locator('.speaker-scores')).toHaveAttribute('open', '');
+  await host.keyboard.press('Enter');
+  await expect(host.locator('.speaker-scores')).not.toHaveAttribute('open');
+  await disclosure.click();
+  const original: Board = await (await host.request.get('/api/admin/board')).json();
+  let personId: string | null = null;
+  let questionId: string | null = null;
+  try {
+    if (original.scoreboardVisible)
+      await adminWrite(host, '/api/admin/scoreboard', 'PUT', { visible: false });
+    await join(page, 'Scoreboard viewer');
+    await join(second, 'Independent scoreboard viewer');
+    for (const viewer of [page, second]) {
+      await expect(viewer.getByRole('tab', { name: 'Scoreboard', exact: true })).toHaveCount(0);
+      expect(await (await viewer.request.get('/api/board')).json()).not.toHaveProperty('scoreboard');
+    }
+    const name = `Sample scoreboard speaker ${Date.now()}`;
+    const text = `Sample scoreboard question ${Date.now()}`;
+    await adminWrite(host, '/api/admin/panellists', 'POST',
+      { name, role: 'Test fixture only', bio: '', visible: true, sortOrder: 9999 });
+    let board: Board = await (await host.request.get('/api/admin/board')).json();
+    personId = board.panellists.find(person => person.name === name)!.id;
+    const person = host.locator('.admin-list article').filter({ has: host.getByRole('heading', { name, exact: true }) });
+    await person.getByRole('button', { name: 'Upload photo', exact: true }).click();
+    await host.getByLabel('Panellist image', { exact: true }).setInputFiles(path.resolve('public', 'branding', 'fireside-scene.jpg'));
+    await host.locator('.photo-form').getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(person.getByRole('img', { name: `Portrait of ${name}`, exact: true })).toBeVisible();
+    await adminWrite(host, '/api/admin/questions', 'POST',
+      { text, category: 'Test fixture only', visible: true, answered: false, sortOrder: 9999, speakerId: personId });
+    board = await (await host.request.get('/api/admin/board')).json();
+    questionId = board.questions.find(question => question.text === text)!.id;
+    await host.getByRole('button', { name: `Edit points for ${name}: ${text}`, exact: true }).click();
+    const form = host.locator('.score-edit-form');
+    await expect(form.getByLabel('Points', { exact: true })).toHaveValue('0');
+    await form.getByLabel('Points', { exact: true }).fill('8');
+    await form.getByLabel('Reason for change', { exact: true }).fill('Sample scoreboard verification');
+    await form.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect(form).toHaveCount(0);
+    await host.getByRole('button', { name: 'Show scoreboard', exact: true }).click();
+    for (const [index, viewer] of [page, second].entries()) {
+      await expect(viewer.getByRole('tab', { name: 'Scoreboard', exact: true })).toBeVisible();
+      await viewer.getByRole('tab', { name: 'Scoreboard', exact: true }).click();
+      const row = viewer.getByRole('tabpanel', { name: 'Scoreboard', exact: true }).getByRole('region', { name: text, exact: true });
+      await expect(row.getByLabel(`${name}: 8 points`, { exact: true })).toBeVisible();
+      await expect(row.getByRole('img', { name: `Portrait of ${name}`, exact: true })).toBeVisible();
+      await expect.poll(() => row.getByRole('img', { name: `Portrait of ${name}`, exact: true })
+        .evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
+      expect(await viewer.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+      await viewer.getByRole('tabpanel', { name: 'Scoreboard', exact: true })
+        .screenshot({ path: testInfo.outputPath(`scoreboard-${index}.png`) });
+    }
+    await host.locator('.speaker-scores').screenshot({ path: testInfo.outputPath('host-scores-expanded.png') });
+    await second.reload();
+    await second.getByRole('tab', { name: 'Live', exact: true }).focus();
+    await second.keyboard.press('End');
+    await expect(second.getByRole('tab', { name: 'Scoreboard', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(second.getByRole('tabpanel', { name: 'Scoreboard', exact: true })
+      .getByRole('region', { name: text, exact: true }).getByLabel(`${name}: 8 points`, { exact: true })).toBeVisible();
+    await host.getByRole('button', { name: 'Hide scoreboard', exact: true }).click();
+    for (const viewer of [page, second]) {
+      await expect(viewer.getByRole('tab', { name: 'Scoreboard', exact: true })).toHaveCount(0);
+      await expect(viewer.getByRole('tab', { name: 'Live', exact: true })).toHaveAttribute('aria-selected', 'true');
+      expect(await (await viewer.request.get('/api/board')).json()).not.toHaveProperty('scoreboard');
+      expect(await viewer.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+    }
+  } finally {
+    if (questionId) await adminWrite(host, `/api/admin/questions/${questionId}`, 'DELETE');
+    if (personId) await adminWrite(host, `/api/admin/panellists/${personId}`, 'DELETE');
+    const latest: Board = await (await host.request.get('/api/admin/board')).json();
+    if (latest.scoreboardVisible !== original.scoreboardVisible)
+      await adminWrite(host, '/api/admin/scoreboard', 'PUT', { visible: original.scoreboardVisible });
     await secondContext.close();
     await hostContext.close();
   }

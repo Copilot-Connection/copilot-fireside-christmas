@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json.Serialization;
 
 namespace Fireside;
 
@@ -20,6 +21,8 @@ public sealed class Board
     public bool GroupDiscussion { get; set; }
     public DateTimeOffset? TimerStartedAt { get; set; }
     public int? TimerDurationSeconds { get; set; }
+    public bool ScoreboardVisible { get; set; }
+    public DateTimeOffset? ScoreboardInitializedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
 public sealed class Panellist
@@ -53,6 +56,20 @@ public sealed class Vote
     public Guid QuestionId { get; set; }
     public Guid ParticipantId { get; set; }
     public int Delta { get; set; }
+    // Attribution must survive switching or deleting the selected panellist.
+    public Guid? SpeakerId { get; set; }
+    public Question Question { get; set; } = null!;
+}
+
+public sealed class ScoreAdjustment
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid QuestionId { get; set; }
+    public Guid SpeakerId { get; set; }
+    public long Delta { get; set; }
+    public Guid ActorId { get; set; }
+    public DateTimeOffset ChangedAt { get; set; }
+    [MaxLength(200)] public string Reason { get; set; } = "";
     public Question Question { get; set; } = null!;
 }
 
@@ -72,6 +89,7 @@ public sealed class FiresideDb(DbContextOptions<FiresideDb> options) : DbContext
     public DbSet<Question> Questions => Set<Question>();
     public DbSet<Vote> Votes => Set<Vote>();
     public DbSet<QuestionSpeakerOrder> QuestionSpeakerOrders => Set<QuestionSpeakerOrder>();
+    public DbSet<ScoreAdjustment> ScoreAdjustments => Set<ScoreAdjustment>();
 
     protected override void OnModelCreating(ModelBuilder model)
     {
@@ -90,9 +108,14 @@ public sealed class FiresideDb(DbContextOptions<FiresideDb> options) : DbContext
             .OnDelete(DeleteBehavior.NoAction);
         model.Entity<QuestionSpeakerOrder>().ToTable(t => t.HasCheckConstraint("CK_QuestionSpeakerOrders_Order", "[SortOrder] >= 0"));
         model.Entity<Vote>().HasKey(v => v.Id);
+        model.Entity<Vote>().HasIndex(v => new { v.QuestionId, v.SpeakerId });
         model.Entity<Vote>().ToTable(t => t.HasCheckConstraint("CK_Votes_Delta", "[Delta] IN (-1, 1, 3)"));
         model.Entity<Vote>().HasOne(v => v.Question).WithMany().HasForeignKey(v => v.QuestionId)
             .OnDelete(DeleteBehavior.Cascade);
+        model.Entity<ScoreAdjustment>().HasIndex(s => new { s.QuestionId, s.SpeakerId });
+        model.Entity<ScoreAdjustment>().HasOne(s => s.Question).WithMany().HasForeignKey(s => s.QuestionId)
+            .OnDelete(DeleteBehavior.Cascade);
+        model.Entity<ScoreAdjustment>().ToTable(t => t.HasCheckConstraint("CK_ScoreAdjustments_Delta", "[Delta] <> 0"));
     }
 }
 
@@ -103,6 +126,8 @@ public sealed record PanellistInput(string? Name, string? Role, string? Bio, boo
 public sealed record QuestionInput(string? Text, string? Category, bool Visible, bool Answered, int SortOrder,
     Guid? SpeakerId = null, IReadOnlyList<Guid>? SpeakerIds = null);
 public sealed record SpeakerInput(Guid SpeakerId);
+public sealed record ScoreInput(long Points, string? Reason);
+public sealed record ScoreboardInput(bool Visible);
 public sealed record TimingInput(int SpeakerSeconds, int GroupSeconds);
 public sealed record DiscussionInput(Guid QuestionId, bool GroupDiscussion);
 public sealed record ReactionInput(Guid RequestId, string Kind);
@@ -117,4 +142,9 @@ public sealed record BoardView(string Title, string Subtitle, bool VotingOpen, G
     long Revision, IReadOnlyList<PanellistView> Panellists, IReadOnlyList<QuestionView> Questions,
     string LandingImageUrl, string LandingImageDescription, bool HasCustomLandingImage,
     int SpeakerSeconds, int GroupSeconds, bool GroupDiscussion, DateTimeOffset? TimerStartedAt,
-    int? TimerDurationSeconds, DateTimeOffset ServerTime);
+    int? TimerDurationSeconds, DateTimeOffset ServerTime, bool ScoreboardVisible,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] ScoreboardView? Scoreboard);
+public sealed record SpeakerPoints(Guid SpeakerId, long Points);
+public sealed record SpeakerTotal(Guid Id, string Name, long Points, bool Removed);
+public sealed record QuestionScores(Guid Id, string Text, IReadOnlyList<SpeakerPoints> Scores, long UnassignedPoints);
+public sealed record ScoreboardView(IReadOnlyList<SpeakerTotal> Speakers, IReadOnlyList<QuestionScores> Questions);

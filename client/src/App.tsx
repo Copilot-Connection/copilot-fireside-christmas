@@ -6,6 +6,7 @@ import { DiscussionTimer, type TimerState } from './DiscussionTimer';
 import { useBoard } from './useBoard';
 import { Admin } from './Admin';
 import { ReactionButtons, ReactionOverlay } from './Reactions';
+import { Scoreboard } from './Scoreboard';
 
 export function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -128,14 +129,20 @@ function LandingArtwork({ source, description }: { source: string; description: 
   </div>;
 }
 
-function Audience({ session, refreshSession }: { session: Session; refreshSession: () => Promise<void> }) {
+export function Audience({ session, refreshSession }: { session: Session; refreshSession: () => Promise<void> }) {
   const { board, error, connection, refresh, reactions } = useBoard(false, true);
   const [filter, setFilter] = useState<'all' | 'answered'>('all');
-  const [view, setView] = useState<'live' | 'questions' | 'panel'>('live');
+  const [view, setView] = useState<'live' | 'questions' | 'panel' | 'scoreboard'>('live');
   const [pending, setPending] = useState<string | null>(null);
   const [voteError, setVoteError] = useState('');
   const [editName, setEditName] = useState(false);
   useEffect(() => { void refresh(); }, [session.canVote, refresh]);
+  useEffect(() => {
+    if (view === 'scoreboard' && board && !board.scoreboardVisible) {
+      setView('live');
+      document.getElementById('tab-live')?.focus();
+    }
+  }, [board, view]);
   async function demoVoter() {
     setPending('sign-in');
     setVoteError('');
@@ -161,9 +168,11 @@ function Audience({ session, refreshSession }: { session: Session; refreshSessio
   const current = board.questions.find(q => q.id === board.currentQuestionId);
   const questions = board.questions.filter(q => filter === 'answered' ? q.answered : !q.answered)
     .sort((a, b) => b.score - a.score || a.sortOrder - b.sortOrder);
-  const views = [
+  const activeView = view === 'scoreboard' && !board.scoreboardVisible ? 'live' : view;
+  const views: { id: typeof view; label: string }[] = [
     { id: 'live', label: 'Live' }, { id: 'questions', label: 'Questions & votes' }, { id: 'panel', label: 'Panellists' },
-  ] as const;
+    ...(board.scoreboardVisible ? [{ id: 'scoreboard' as const, label: 'Scoreboard' }] : []),
+  ];
   return <PageFrame session={session} fillViewport audienceBar={
     <div className="audience-bar">
       <span className={`connection ${connection === 'Live' ? 'connected' : ''}`} role="status">
@@ -179,7 +188,7 @@ function Audience({ session, refreshSession }: { session: Session; refreshSessio
     {editName && <div className="name-edit"><NameForm session={session} initial={session.participantName ?? ''}
       onSaved={async () => { await refreshSession(); setEditName(false); }} /></div>}
     <div className="audience-tabs" role="tablist" aria-label="Fireside views" onKeyDown={event => {
-      const index = views.findIndex(item => item.id === view);
+      const index = views.findIndex(item => item.id === activeView);
       const next = event.key === 'ArrowRight' ? (index + 1) % views.length :
         event.key === 'ArrowLeft' ? (index + views.length - 1) % views.length :
           event.key === 'Home' ? 0 : event.key === 'End' ? views.length - 1 : -1;
@@ -188,14 +197,14 @@ function Audience({ session, refreshSession }: { session: Session; refreshSessio
       setView(views[next].id);
       event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next].focus();
     }}>
-      {views.map(item => <button key={item.id} id={`tab-${item.id}`} role="tab" aria-selected={view === item.id}
-        aria-controls={`panel-${item.id}`} tabIndex={view === item.id ? 0 : -1}
+      {views.map(item => <button key={item.id} id={`tab-${item.id}`} role="tab" aria-selected={activeView === item.id}
+        aria-controls={`panel-${item.id}`} tabIndex={activeView === item.id ? 0 : -1}
         onClick={() => setView(item.id)}>{item.label}</button>)}
     </div>
     <header className="event-heading"><h1>{board.title}</h1><p>{board.subtitle}</p></header>
     {error && <ErrorNotice message={`${error} The board may be out of date.`} />}
     {new URLSearchParams(location.search).has('authError') && <ErrorNotice message="Microsoft sign-in did not complete. Try again with a work or school account, or contact your organisation's administrator." />}
-    <div className="tab-panel activity-panel" role="tabpanel" id="panel-live" aria-labelledby="tab-live" hidden={view !== 'live'}>
+    <div className="tab-panel activity-panel" role="tabpanel" id="panel-live" aria-labelledby="tab-live" hidden={activeView !== 'live'}>
     <CurrentActivity question={current} votingOpen={board.votingOpen} canVote={session.canVote}
       speaker={board.panellists.find(person => person.id === current?.speakerId)}
       groupDiscussion={board.groupDiscussion} timer={board}
@@ -210,7 +219,7 @@ function Audience({ session, refreshSession }: { session: Session; refreshSessio
     </CurrentActivity>
     </div>
     {voteError && <ErrorNotice message={voteError} />}
-    <section className="tab-panel questions-section" role="tabpanel" id="panel-questions" aria-labelledby="tab-questions" hidden={view !== 'questions'}>
+    <section className="tab-panel questions-section" role="tabpanel" id="panel-questions" aria-labelledby="tab-questions" hidden={activeView !== 'questions'}>
         <div className="queue-heading"><h2>Questions &amp; points</h2><span className="voting-state">{board.groupDiscussion ? 'Group discussion' : board.votingOpen ? 'Voting open' : 'Voting paused'}</span></div>
         {!session.canVote && <p className="section-description">Sign in on the Live tab with your organisational Entra account to see your points and react to the current discussion.</p>}
         <div className="tabs" aria-label="Filter questions">
@@ -222,9 +231,10 @@ function Audience({ session, refreshSession }: { session: Session; refreshSessio
             : <div className="empty-state"><p>{filter === 'answered' ? 'Answered questions will appear here.' : 'The host will share more questions here.'}</p></div>}
         </div>
         <p className="fine-print voting-note"><ShieldCheck size={15} aria-hidden="true" /> React to the current discussion on the Live tab.
-          Likes add 1, dislikes subtract 1, and epic points add 3. Your points show your net contribution to each question.</p>
+          Likes add 1, dislikes subtract 1, and epic points add 3. Total points include host adjustments.
+          Your points show only your net contribution to each question.</p>
     </section>
-    <section className="tab-panel panel-section" role="tabpanel" id="panel-panel" aria-labelledby="tab-panel" hidden={view !== 'panel'}>
+    <section className="tab-panel panel-section" role="tabpanel" id="panel-panel" aria-labelledby="tab-panel" hidden={activeView !== 'panel'}>
           <h2>Meet the panel</h2>
           {board.panellists.length ? board.panellists.map(person => <article className="person-card" key={person.id}>
             {person.photoUrl && <PanellistPhoto person={person} />}
@@ -232,6 +242,10 @@ function Audience({ session, refreshSession }: { session: Session; refreshSessio
             {person.bio && <p>{person.bio}</p>}
           </article>) : <p className="section-description">The host hasn't announced the panel yet.</p>}
     </section>
+    {board.scoreboardVisible && board.scoreboard && <section className="tab-panel scoreboard-section" role="tabpanel"
+      id="panel-scoreboard" aria-labelledby="tab-scoreboard" hidden={activeView !== 'scoreboard'}>
+      <h2>Scoreboard</h2><Scoreboard scores={board.scoreboard} people={board.panellists} />
+    </section>}
   </PageFrame>;
 }
 
@@ -272,14 +286,16 @@ export function CurrentActivity({ question, imageUrl, imageDescription, votingOp
   </section>;
 }
 
-export function PanellistPhoto({ person }: { person: Panellist }) {
+export function PanellistPhoto({ person, compact = false }: { person: Panellist; compact?: boolean }) {
   const [failed, setFailed] = useState(false);
   useEffect(() => setFailed(false), [person.photoUrl]);
-  return <div className="speaker-image">
+  return <div className={`speaker-image${compact ? ' speaker-avatar' : ''}`}>
     {person.photoUrl && !failed ? <img src={person.photoUrl} alt={`Portrait of ${person.name}`}
       width={320} height={320} onError={() => setFailed(true)} />
-      : <div className="speaker-placeholder"><Flame size={32} aria-hidden="true" />
-        <span>{failed ? 'Photo could not load' : 'No photo added'}</span></div>}
+      : <div className="speaker-placeholder" role={compact ? 'img' : undefined}
+        aria-label={compact ? `${failed ? 'Photo could not load' : 'No photo added'} for ${person.name}` : undefined}>
+        <Flame size={compact ? 20 : 32} aria-hidden="true" />
+        {!compact && <span>{failed ? 'Photo could not load' : 'No photo added'}</span>}</div>}
   </div>;
 }
 

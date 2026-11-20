@@ -521,6 +521,100 @@ public sealed class BoardTests
         Assert.DoesNotContain(second.Id, (await audience.GetFromJsonAsync<BoardView>("/api/board"))!.Questions[0].SpeakerIds);
     }
 
+    [Fact]
+    public async Task Speaker_scores_keep_cast_time_attribution_and_audited_adjustments_leave_voter_history_unchanged()
+    {
+        await using var site = new Site();
+        using var admin = await site.Client("Fireside.Admin");
+        using var voter = await site.Client("Attendee");
+        using var audience = await site.Client();
+        await Token(admin);
+        await Token(voter);
+        (await voter.PutAsJsonAsync("/api/participant", new NameInput("Score viewer"))).EnsureSuccessStatusCode();
+        var board = await Revision(admin);
+        Assert.NotNull(board.Scoreboard);
+        var question = board.Questions.Single(q => q.Visible);
+        var first = board.Panellists.Single(p => p.Visible);
+        (await admin.PostAsJsonAsync("/api/admin/panellists", new PanellistInput("Second speaker", "", "", true, 1))).EnsureSuccessStatusCode();
+        board = await Revision(admin);
+        var second = board.Panellists.Single(p => p.Name == "Second speaker");
+        var path = $"/api/admin/questions/{question.Id}/speaker";
+        (await admin.PutAsJsonAsync(path, new SpeakerInput(first.Id))).EnsureSuccessStatusCode();
+        var requestId = Guid.NewGuid();
+        (await React(voter, question.Id, "epic", requestId)).EnsureSuccessStatusCode();
+        await Revision(admin);
+        (await admin.PutAsJsonAsync(path, new SpeakerInput(second.Id))).EnsureSuccessStatusCode();
+        (await React(voter, question.Id, "dislike")).EnsureSuccessStatusCode();
+        (await React(voter, question.Id, "epic", requestId)).EnsureSuccessStatusCode();
+        board = await Revision(admin);
+        var row = board.Scoreboard!.Questions.Single(q => q.Id == question.Id);
+        Assert.Equal(3, row.Scores.Single(s => s.SpeakerId == first.Id).Points);
+        Assert.Equal(-1, row.Scores.Single(s => s.SpeakerId == second.Id).Points);
+        var edit = $"/api/admin/questions/{question.Id}/scores/{first.Id}";
+        (await admin.PutAsJsonAsync(edit, new ScoreInput(10, "Host correction"))).EnsureSuccessStatusCode();
+        Assert.Equal(HttpStatusCode.Conflict, (await admin.PutAsJsonAsync(edit, new ScoreInput(12, "Stale edit"))).StatusCode);
+        var personal = (await voter.GetFromJsonAsync<BoardView>("/api/board"))!;
+        Assert.Equal(9, personal.Questions[0].Score);
+        Assert.Equal(2, personal.Questions[0].MyScore);
+        Assert.False(personal.ScoreboardVisible);
+        Assert.Null(personal.Scoreboard);
+        Assert.DoesNotContain("\"scoreboard\":", await audience.GetStringAsync("/api/board"));
+        await Revision(admin);
+        (await admin.PutAsJsonAsync("/api/admin/scoreboard", new ScoreboardInput(true))).EnsureSuccessStatusCode();
+        var published = (await audience.GetFromJsonAsync<BoardView>("/api/board"))!;
+        Assert.Equal(10, published.Scoreboard!.Speakers.Single(s => s.Id == first.Id).Points);
+        using (var scope = site.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<FiresideDb>();
+            Assert.Equal(2, await db.Votes.CountAsync());
+            Assert.Equal(first.Id, (await db.Votes.FindAsync(requestId))!.SpeakerId);
+            var adjustment = await db.ScoreAdjustments.SingleAsync();
+            Assert.Equal(7, adjustment.Delta);
+            Assert.Equal("Host correction", adjustment.Reason);
+            Assert.NotEqual(Guid.Empty, adjustment.ActorId);
+            Assert.Equal(site.Clock.GetUtcNow(), adjustment.ChangedAt);
+        }
+        await Revision(admin);
+        (await admin.PutAsJsonAsync(path, new SpeakerInput(first.Id))).EnsureSuccessStatusCode();
+        (await React(voter, question.Id)).EnsureSuccessStatusCode();
+        Assert.Equal(11, (await audience.GetFromJsonAsync<BoardView>("/api/board"))!.Scoreboard!.Speakers.Single(s => s.Id == first.Id).Points);
+        await Revision(admin);
+        (await admin.PutAsJsonAsync($"/api/admin/panellists/{first.Id}", new PanellistInput(first.Name, first.Role, first.Bio, false, 0))).EnsureSuccessStatusCode();
+        Assert.DoesNotContain(first.Id.ToString(), await audience.GetStringAsync("/api/board"), StringComparison.OrdinalIgnoreCase);
+        await Revision(admin);
+        (await admin.DeleteAsync($"/api/admin/panellists/{first.Id}")).EnsureSuccessStatusCode();
+        board = await Revision(admin);
+        Assert.True(board.Scoreboard!.Speakers.Single(s => s.Id == first.Id).Removed);
+        Assert.Equal(11, board.Scoreboard.Speakers.Single(s => s.Id == first.Id).Points);
+        (await admin.PutAsJsonAsync("/api/admin/scoreboard", new ScoreboardInput(false))).EnsureSuccessStatusCode();
+        Assert.DoesNotContain("\"scoreboard\":", await audience.GetStringAsync("/api/board"));
+    }
+
+    [Fact]
+    public async Task Score_edits_and_visibility_enforce_role_csrf_revision_and_input_validation()
+    {
+        await using var site = new Site();
+        using var admin = await site.Client("Fireside.Admin");
+        using var voter = await site.Client("Attendee");
+        using var audience = await site.Client();
+        var board = (await audience.GetFromJsonAsync<BoardView>("/api/board"))!;
+        var edit = $"/api/admin/questions/{board.Questions[0].Id}/scores/{board.Panellists[0].Id}";
+        foreach (var path in new[] { edit, "/api/admin/scoreboard" })
+        {
+            Assert.Equal(HttpStatusCode.Unauthorized, (await audience.PutAsJsonAsync(path, new { points = 3, reason = "Test", visible = true })).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden, (await voter.PutAsJsonAsync(path, new { points = 3, reason = "Test", visible = true })).StatusCode);
+            Assert.Equal(HttpStatusCode.BadRequest, (await admin.PutAsJsonAsync(path, new { points = 3, reason = "Test", visible = true })).StatusCode);
+        }
+        await Token(admin);
+        Assert.Equal((HttpStatusCode)428, (await admin.PutAsJsonAsync(edit, new ScoreInput(3, "Test"))).StatusCode);
+        await Revision(admin);
+        Assert.Equal(HttpStatusCode.BadRequest, (await admin.PutAsJsonAsync(edit, new ScoreInput(3, ""))).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await admin.PutAsJsonAsync(edit, new ScoreInput(1000000001, "Too large"))).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await admin.PutAsJsonAsync($"/api/admin/questions/{Guid.NewGuid()}/scores/{board.Panellists[0].Id}", new ScoreInput(3, "Unknown"))).StatusCode);
+        (await admin.PutAsJsonAsync("/api/admin/scoreboard", new ScoreboardInput(true))).EnsureSuccessStatusCode();
+        Assert.Equal(HttpStatusCode.Conflict, (await admin.PutAsJsonAsync("/api/admin/scoreboard", new ScoreboardInput(false))).StatusCode);
+    }
+
     private static async Task<BoardView> Revision(HttpClient client)
     {
         var board = (await client.GetFromJsonAsync<BoardView>("/api/admin/board"))!;

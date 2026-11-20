@@ -18,6 +18,7 @@ const board: Board = {
   panellists: [], questions: [], landingImageUrl: '', landingImageDescription: '',
   hasCustomLandingImage: false, speakerSeconds: 120, groupSeconds: 300, groupDiscussion: false,
   timerStartedAt: null, timerDurationSeconds: null, serverTime: '2026-01-01T00:00:00Z',
+  scoreboardVisible: false,
 };
 
 it('applies a saved host revision even when a hub refresh starts before its response completes', async () => {

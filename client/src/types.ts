@@ -13,7 +13,12 @@ export type Board = {
   landingImageUrl: string; landingImageDescription: string; hasCustomLandingImage: boolean;
   speakerSeconds: number; groupSeconds: number; groupDiscussion: boolean;
   timerStartedAt: string | null; timerDurationSeconds: number | null; serverTime: string;
+  scoreboardVisible: boolean; scoreboard?: Scoreboard;
 };
+export type SpeakerPoints = { speakerId: string; points: number };
+export type QuestionScores = { id: string; text: string; scores: SpeakerPoints[]; unassignedPoints: number };
+export type SpeakerTotal = { id: string; name: string; points: number; removed: boolean };
+export type Scoreboard = { speakers: SpeakerTotal[]; questions: QuestionScores[] };
 export type Session = {
   participantName: string | null; isAdmin: boolean; signedIn: boolean; canVote: boolean;
   adminName: string | null; demo: boolean; csrfToken: string;

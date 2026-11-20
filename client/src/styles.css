@@ -155,7 +155,29 @@ button.text-button { min-height: 44px; max-width: 100%; border: 0; padding: 4px 
 .person-card .speaker-image, .admin-list .speaker-image { width: 96px; margin: 12px 0; }
 .ready-note { display: flex; gap: 8px; align-items: center; margin-top: 32px; color: var(--cp-text-soft); font-size: .85rem; }
 .ready-note svg { color: var(--cp-accent); }
-.audience-tabs { display: flex; gap: 32px; border-bottom: 1px solid var(--cp-border); flex-shrink: 0; }
+.audience-tabs { display: flex; gap: 32px; border-bottom: 1px solid var(--cp-border); flex-shrink: 0; overflow-x: auto; max-width: 100%; }
+.audience-tabs button { flex-shrink: 0; }
+.audience-tabs button:focus-visible { outline-offset: -3px; }
+.scoreboard-totals { margin: 0 0 36px; }
+.scoreboard-totals > div { display: flex; justify-content: space-between; gap: 24px; padding: 14px 0; border-bottom: 1px solid var(--cp-border); }
+.scoreboard-totals dt { font-weight: 600; overflow-wrap: anywhere; min-width: 0; }
+.scoreboard-totals dd { margin: 0; font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--cp-accent); font-weight: 700; }
+.scoreboard-totals dd span { font-size: .85rem; font-weight: 400; color: var(--cp-text-soft); }
+.scoreboard-question { margin: 32px 0; }
+.scoreboard-question h4 { margin-bottom: 12px; overflow-wrap: anywhere; }
+.scoreboard-row { display: flex; align-items: center; gap: 16px; padding: 10px 0; border-bottom: 1px solid var(--cp-border); flex-wrap: wrap; }
+.scoreboard-row > .scoreboard-person { flex: 1; min-width: 100px; }
+.scoreboard-person { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.scoreboard-person > span { min-width: 0; overflow-wrap: anywhere; }
+.speaker-avatar { width: 40px; flex-shrink: 0; }
+.speaker-avatar img { width: 40px; height: 40px; border-radius: 8px; }
+.speaker-avatar .speaker-placeholder { width: 40px; height: 40px; min-height: 40px; gap: 0; border-radius: 8px; }
+.scoreboard-row strong { font-variant-numeric: tabular-nums; }
+.score-edit-form { scroll-margin-top: 20px; }
+.speaker-scores > summary { cursor: pointer; min-height: 44px; padding: 8px 0; }
+.speaker-scores > summary h2 { display: inline; margin: 0; }
+.speaker-scores > summary small { display: inline-block; font-size: .8rem; font-weight: 400; line-height: 1.5; color: var(--cp-text-soft); margin-left: 12px; }
+.speaker-scores[open] > summary { margin-bottom: 20px; }
 .audience-tabs button { border: 0; border-radius: 0; border-bottom: 3px solid transparent; background: none; padding: 12px 4px; min-height: 52px; font-size: .9rem; color: var(--cp-text-soft); }
 .audience-tabs button[aria-selected="true"] { border-color: var(--cp-accent); color: var(--cp-accent); }
 .tab-panel { flex: 1; padding: 32px 0; }
