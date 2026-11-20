@@ -1,7 +1,10 @@
+using Azure.Core;
 using Azure.Identity;
 using Azure.Storage.Blobs;
 using Fireside;
 using Microsoft.Azure.Cosmos;
+using Microsoft.IdentityModel.Tokens;
+using System.Text.Json;
 
 namespace FiresideImport;
 
@@ -22,7 +25,10 @@ public static class ImportCommand
         var blobEndpoint = new Uri(Required("Storage__BlobServiceUri"));
         if (endpoint.Scheme != "https" || blobEndpoint.Scheme != "https")
             throw new InvalidOperationException("Cloud data endpoints must use HTTPS.");
-        var credential = new AzureCliCredential(new AzureCliCredentialOptions { TenantId = Required("AZURE_TENANT_ID") });
+        var tenant = Guid.Parse(Required("AZURE_TENANT_ID"));
+        var subscription = Guid.Parse(Required("AZURE_SUBSCRIPTION_ID"));
+        var credential = new SubscriptionTenantCredential(
+            new AzureCliCredential(new AzureCliCredentialOptions { Subscription = subscription.ToString() }), tenant);
         using var cosmos = new CosmosClient(endpoint.AbsoluteUri, credential, new CosmosClientOptions
         {
             Serializer = new EventCosmosSerializer(), ConsistencyLevel = ConsistencyLevel.Strong,
@@ -39,5 +45,46 @@ public static class ImportCommand
             $"{archive.Votes.Count} votes, {archive.Adjustments.Count} adjustments, {archive.Images.Count} images. " +
             $"Event digest: {EventArchive.Digest(archive.Data)}");
         return 0;
+    }
+
+    internal sealed class SubscriptionTenantCredential(TokenCredential inner, Guid tenant) : TokenCredential
+    {
+        public override AccessToken GetToken(TokenRequestContext requestContext, CancellationToken cancellationToken) =>
+            Validate(inner.GetToken(Prepare(requestContext), cancellationToken));
+
+        public override async ValueTask<AccessToken> GetTokenAsync(
+            TokenRequestContext requestContext, CancellationToken cancellationToken) =>
+            Validate(await inner.GetTokenAsync(Prepare(requestContext), cancellationToken).ConfigureAwait(false));
+
+        private TokenRequestContext Prepare(TokenRequestContext request)
+        {
+            if (!string.IsNullOrEmpty(request.TenantId) &&
+                (!Guid.TryParse(request.TenantId, out var requested) || requested != tenant))
+                throw new AuthenticationFailedException("The service requested a tenant outside AZURE_TENANT_ID.");
+            // CLI cannot combine tenant and subscription. Check the challenge and returned token
+            // while keeping subscription-based account selection, including Blob's tenant challenge.
+            return new TokenRequestContext(request.Scopes, parentRequestId: request.ParentRequestId,
+                claims: request.Claims, isCaeEnabled: request.IsCaeEnabled);
+        }
+
+        private AccessToken Validate(AccessToken token)
+        {
+            const string message = "The operator credential did not return a valid token for AZURE_TENANT_ID.";
+            try
+            {
+                var parts = token.Token.Split('.');
+                if (parts.Length != 3) throw new AuthenticationFailedException(message);
+                using var payload = JsonDocument.Parse(Base64UrlEncoder.DecodeBytes(parts[1]));
+                if (payload.RootElement.ValueKind != JsonValueKind.Object ||
+                    !payload.RootElement.TryGetProperty("tid", out var tid) || tid.ValueKind != JsonValueKind.String ||
+                    !Guid.TryParse(tid.GetString(), out var actual) || actual != tenant)
+                    throw new AuthenticationFailedException(message);
+                return token;
+            }
+            catch (Exception exception) when (exception is ArgumentException or FormatException or JsonException)
+            {
+                throw new AuthenticationFailedException(message);
+            }
+        }
     }
 }

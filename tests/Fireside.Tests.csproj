@@ -15,6 +15,7 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <ProjectReference Include="../server/Fireside.csproj" />
+    <ProjectReference Include="../tools/Fireside.Import/Fireside.Import.csproj" />
     <Content Include="../server/Schema/006-speaker-scoreboard.sqlite.sql" Link="Schema/006-speaker-scoreboard.sqlite.sql" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

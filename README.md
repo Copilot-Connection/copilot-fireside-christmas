@@ -384,9 +384,11 @@ checks integrity/foreign keys and validates score projections against the ledger
 It preserves IDs, settings, speaker order, images, votes, score adjustments and their
 attribution. Existing data remains on the source; it is never rewritten or reset.
 Configure the same `Cosmos__*` and `Storage__*` values listed above outside source
-control, plus `AZURE_TENANT_ID` for the intended operator tenant. The tool uses
-Azure CLI credentials explicitly bound to that tenant; the operator needs Cosmos
-and Blob data-plane roles, not just subscription Owner.
+control, plus `AZURE_SUBSCRIPTION_ID` and `AZURE_TENANT_ID` for the intended operator.
+The tool selects that subscription's CLI account without changing the shared CLI
+default, rejects other service-tenant challenges, and checks each issued token's
+tenant before using it. The operator needs Cosmos and Blob data-plane roles, not
+just subscription Owner.
 
 ```powershell
 # Only after resource/deployment approvals, a verified backup and stopping writes.
