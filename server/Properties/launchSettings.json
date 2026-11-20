@@ -1,0 +1,28 @@
+{
+  "profiles": {
+    "Demo": {
+      "commandName": "Project",
+      "launchBrowser": false,
+      "applicationUrl": "http://127.0.0.1:5180",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "Demo__Enabled": "true",
+        "Database__Provider": "Sqlite",
+        "ConnectionStrings__Fireside": "Data Source=.data/fireside.db",
+        "DataProtection__KeyPath": ".data/keys"
+      }
+    },
+    "Entra": {
+      "commandName": "Project",
+      "launchBrowser": false,
+      "applicationUrl": "https://localhost:7180",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "Demo__Enabled": "false",
+        "Database__Provider": "Sqlite",
+        "ConnectionStrings__Fireside": "Data Source=.data/entra.db",
+        "DataProtection__KeyPath": ".data/entra-keys"
+      }
+    }
+  }
+}
