@@ -10,6 +10,12 @@ The Fireside site's actual images are used here for the requested brand continui
 - `fireside-scene.jpg`: https://copilotfireside.chat/assets/images/image04.jpg
   (the show's existing fireplace photograph; captioned as brand imagery, not the
   Christmas event's confirmed panel).
+- `christmas-fireside.png`: the December poster explicitly selected by the user,
+  copied locally from
+  https://files.elfsightcdn.com/eafe4a4d-3436-495d-b748-5bdce62d911d/24af486a-8bbe-4d58-a3c4-af7f453fbbe1/December-Copilot-Fireside-Chat-Elfsight.png.
+  No runtime CDN request is needed. Its original event text remains in the image;
+  no year is inferred and it is not used to invent structured event/panellist data.
+  Hosts can replace it or restore this default from the host desk.
 
 This is existing brand artwork, not a newly generated image. Artwork remains the
 property of its original owner; its presence does not license unrelated reuse.
@@ -17,8 +23,8 @@ The Christmas UI treatment and simple flame UI icon are new, not an official log
 No distinct Fireside logo asset was identified: the small image01.png on the
 reference site is the Microsoft Copilot product mark, so it is not mislabelled or
 republished here as a Fireside Chat logo.
-No past guest photograph, name or event
-details from the reference site are represented as this event's confirmed panel.
+Apart from the specifically requested poster, no past guest photograph, name or
+event details from the reference site are represented as this event's confirmed panel.
 
 The audience's charcoal surface, gold accents, restrained network-line motif and
 uppercase display wordmark take their direction from the reference site.

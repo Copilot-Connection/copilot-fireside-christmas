@@ -6,7 +6,7 @@ import { useBoard } from './useBoard';
 import { ErrorNotice, Loading, Surface } from './App';
 
 type PersonDraft = Omit<Panellist, 'id'>;
-type QuestionDraft = Omit<Question, 'id' | 'votes' | 'hasVoted'>;
+type QuestionDraft = Omit<Question, 'id' | 'score'>;
 const emptyPerson: PersonDraft = { name: '', role: '', bio: '', visible: false, sortOrder: 0 };
 const emptyQuestion: QuestionDraft = { text: '', category: '', visible: false, answered: false, sortOrder: 0 };
 
@@ -18,6 +18,7 @@ export function Admin({ session, refreshSession }: { session: Session; refreshSe
   const [editingPerson, setEditingPerson] = useState<{ id?: string; draft: PersonDraft; revision: number } | null>(null);
   const [editingQuestion, setEditingQuestion] = useState<{ id?: string; draft: QuestionDraft; revision: number } | null>(null);
   const [settings, setSettings] = useState<Board | null>(null);
+  const [artwork, setArtwork] = useState<{ file: File | null; description: string; revision: number } | null>(null);
 
   async function mutation(path: string, method: string, body?: unknown, revision = board?.revision) {
     if (pending) return false;
@@ -80,6 +81,7 @@ export function Admin({ session, refreshSession }: { session: Session; refreshSe
     <div className="control-strip"><span className="connection" role="status"><span className={`status-dot ${connection === 'Live' ? 'on' : ''}`} /> {connection}</span>
       <span>Audience voting is <strong>{board.votingOpen ? 'open' : 'paused'}</strong></span>
       <button disabled={pending} onClick={() => updateBoard({ votingOpen: !board.votingOpen })}>{board.votingOpen ? 'Pause voting' : 'Open voting'}</button>
+      <button disabled={pending || board.currentQuestionId === null} onClick={() => updateBoard({ currentQuestionId: null })}>Show landing page</button>
       <a className="button" href="/" target="_blank" rel="noreferrer"><Eye size={16} aria-hidden="true" /> View audience board</a></div>
     {(error || loadError) && <ErrorNotice message={error || loadError} />}
     {notice && <p className="success-notice" role="status"><Check size={17} aria-hidden="true" /> {notice}</p>}
@@ -92,6 +94,27 @@ export function Admin({ session, refreshSession }: { session: Session; refreshSe
         <FormActions pending={pending} cancel={() => setSettings(null)} />
       </form> : <div className="row-between"><div><strong>{board.title}</strong><p>{board.subtitle}</p></div>
         <button onClick={() => setSettings({ ...board })}>Edit event details</button></div>}
+    </Surface>
+    <Surface title="Landing image">
+      <p className="section-description">Shown on arrival and whenever no question is being discussed. Uploads are public and stored durably in the event database.</p>
+      <img className="admin-artwork" src={board.landingImageUrl} alt={board.landingImageDescription} />
+      {artwork ? <form className="editor-form" onSubmit={async event => {
+        event.preventDefault();
+        if (!artwork.file) return;
+        if (await mutation(`/api/admin/landing-image?description=${encodeURIComponent(artwork.description)}`,
+          'PUT', artwork.file, artwork.revision)) setArtwork(null);
+      }}>
+        <label>Image file<input type="file" accept="image/png,image/jpeg" required disabled={pending}
+          onChange={event => setArtwork({ ...artwork, file: event.target.files?.[0] ?? null })} /></label>
+        <label>Image description<input required maxLength={300} value={artwork.description}
+          onChange={event => setArtwork({ ...artwork, description: event.target.value })} /></label>
+        <p className="fine-print">PNG or JPEG, up to 2 MB, 8192 pixels per side and 24 megapixels. Describe important text in the image. Remove private metadata before uploading.</p>
+        <FormActions pending={pending} cancel={() => setArtwork(null)} />
+        {artwork.revision !== board.revision && <p className="fine-print">The board changed. Cancel and reopen before uploading.</p>}
+      </form> : <div className="action-row">
+        <button onClick={() => setArtwork({ file: null, description: '', revision: board.revision })}>Change landing image</button>
+        <button disabled={pending || !board.hasCustomLandingImage} onClick={() => void mutation('/api/admin/landing-image', 'DELETE')}>Use default artwork</button>
+      </div>}
     </Surface>
     <div className="admin-columns">
       <Surface title="Questions">
@@ -115,7 +138,7 @@ export function Admin({ session, refreshSession }: { session: Session; refreshSe
           {editingQuestion.revision !== board.revision && <p className="fine-print">The board changed while you were editing. Cancel and reopen to edit the latest version.</p>}
         </form>}
         <div className="admin-list">{board.questions.map(question => <article key={question.id}>
-          <div className="question-tags"><span>{question.visible ? 'Published' : 'Hidden'}</span><span>{question.votes} votes</span>
+          <div className="question-tags"><span>{question.visible ? 'Published' : 'Hidden'}</span><span>{question.score} points</span>
             {question.answered && <span>Answered</span>}
             {board.currentQuestionId === question.id && <span className="current-tag">Discussing now</span>}</div>
           <h3>{question.text}</h3><p className="fine-print">{question.category}</p>
@@ -129,7 +152,7 @@ export function Admin({ session, refreshSession }: { session: Session; refreshSe
             <button disabled={pending} onClick={() => void mutation(`/api/admin/questions/${question.id}`, 'PUT', { ...question, answered: !question.answered })}>
               <Check size={15} aria-hidden="true" />{question.answered ? 'Reopen' : 'Mark answered'}</button>
             <button className="danger-button" disabled={pending} aria-label={`Delete question: ${question.text}`}
-              onClick={() => { if (confirm('Permanently delete this question and all its votes?')) void mutation(`/api/admin/questions/${question.id}`, 'DELETE'); }}>
+              onClick={() => { if (confirm('Permanently delete this question and all its reactions?')) void mutation(`/api/admin/questions/${question.id}`, 'DELETE'); }}>
               <Trash2 size={15} aria-hidden="true" /></button>
           </div>
         </article>)}</div>

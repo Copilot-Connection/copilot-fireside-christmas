@@ -31,13 +31,56 @@ public static class Api
     public static void MapFiresideApi(this WebApplication app)
     {
         app.MapGet("/api/board", async (FiresideDb db, HttpContext context) =>
-            Results.Ok(await Snapshot(db, EntraIdentity.VoterKey(context.User), false, context.RequestAborted)));
+            Results.Ok(await Snapshot(db, false, context.RequestAborted)));
+        app.MapGet("/api/landing-image", async (FiresideDb db, CancellationToken token) =>
+        {
+            var image = await db.Boards.AsNoTracking().Select(b => new { b.LandingImageData, b.LandingImageContentType })
+                .SingleAsync(token);
+            return image.LandingImageData is { } data && image.LandingImageContentType is { } type
+                ? Results.Bytes(data, type) : Results.Redirect(LandingImages.DefaultUrl);
+        });
         app.MapPost("/api/questions/{id:guid}/vote", Vote)
-            .RequireAuthorization("Voter").RequireRateLimiting("participation");
+            .RequireAuthorization("Voter").RequireRateLimiting("voting");
 
         var admin = app.MapGroup("/api/admin").RequireAuthorization("Admin");
         admin.MapGet("/board", async (FiresideDb db, CancellationToken token) =>
-            Results.Ok(await Snapshot(db, null, true, token)));
+            Results.Ok(await Snapshot(db, true, token)));
+        admin.MapPut("/landing-image", async (string? description, HttpContext context, FiresideDb db, LiveUpdates live) =>
+        {
+            if (!InputRules.Text(description?.Trim(), 1, 300))
+                return Invalid("Describe the image for people using screen readers (1-300 characters).");
+            if (context.Request.ContentLength > LandingImages.MaximumBytes)
+                return Results.Problem("Choose a PNG or JPEG image no larger than 2 MB.", statusCode: 413);
+            using var stream = new MemoryStream();
+            var buffer = new byte[8192];
+            int count;
+            while ((count = await context.Request.Body.ReadAsync(buffer, context.RequestAborted)) > 0)
+            {
+                if (stream.Length + count > LandingImages.MaximumBytes)
+                    return Results.Problem("Choose a PNG or JPEG image no larger than 2 MB.", statusCode: 413);
+                await stream.WriteAsync(buffer.AsMemory(0, count), context.RequestAborted);
+            }
+            var data = stream.ToArray();
+            var type = LandingImages.ContentType(data);
+            if (type is null) return Invalid("Choose a PNG or JPEG image, up to 8192 pixels per side and 24 megapixels. SVG and other file types are not accepted.");
+            return await Mutate(context, db, live, board =>
+            {
+                board.LandingImageData = data;
+                board.LandingImageContentType = type;
+                board.LandingImageDescription = description!.Trim();
+                board.LandingImageRevision = board.Revision + 1;
+                return Task.FromResult<IResult?>(null);
+            });
+        });
+        admin.MapDelete("/landing-image", async (HttpContext context, FiresideDb db, LiveUpdates live) =>
+            await Mutate(context, db, live, board =>
+            {
+                board.LandingImageData = null;
+                board.LandingImageContentType = null;
+                board.LandingImageRevision = null;
+                board.LandingImageDescription = LandingImages.DefaultDescription;
+                return Task.FromResult<IResult?>(null);
+            }));
         admin.MapPut("/board", async (BoardInput input, HttpContext context, FiresideDb db, LiveUpdates live) =>
             await Mutate(context, db, live, async board =>
             {
@@ -110,58 +153,69 @@ public static class Api
             }));
     }
 
-    public static async Task<BoardView> Snapshot(FiresideDb db, Guid? participant, bool admin, CancellationToken token)
+    public static async Task<BoardView> Snapshot(FiresideDb db, bool admin, CancellationToken token)
     {
         // A consistent snapshot prevents half-applied host changes appearing in the audience UI.
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
-        var board = await db.Boards.AsNoTracking().SingleAsync(token);
+        var board = await db.Boards.AsNoTracking().Select(b => new
+        {
+            b.Title, b.Subtitle, b.VotingOpen, b.CurrentQuestionId, b.Revision,
+            b.LandingImageRevision, b.LandingImageDescription
+        }).SingleAsync(token);
         var panellists = await db.Panellists.AsNoTracking().Where(p => admin || p.Visible)
             .OrderBy(p => p.SortOrder).ThenBy(p => p.Name).ToListAsync(token);
         var questions = await db.Questions.AsNoTracking().Where(q => admin || q.Visible)
             .OrderBy(q => q.SortOrder).ThenBy(q => q.Id)
             .Select(q => new QuestionView(q.Id, q.Text, q.Category, q.Visible, q.Answered, q.SortOrder,
-                db.Votes.Count(v => v.QuestionId == q.Id),
-                participant != null && db.Votes.Any(v => v.QuestionId == q.Id && v.ParticipantId == participant)))
+                db.Votes.Where(v => v.QuestionId == q.Id).Sum(v => (long?)v.Delta) ?? 0))
             .ToListAsync(token);
         await transaction.CommitAsync(token);
         return new(board.Title, board.Subtitle, board.VotingOpen,
             questions.Any(q => q.Id == board.CurrentQuestionId) ? board.CurrentQuestionId : null,
-            board.Revision, panellists, questions);
+            board.Revision, panellists, questions,
+            board.LandingImageRevision is { } version ? $"/api/landing-image?v={version}" : LandingImages.DefaultUrl,
+            board.LandingImageDescription, board.LandingImageRevision is not null);
     }
 
-    private static async Task<IResult> Vote(Guid id, HttpContext context, FiresideDb db,
+    private static async Task<IResult> Vote(Guid id, ReactionInput input, HttpContext context, FiresideDb db,
         ParticipantIdentity identities, LiveUpdates live)
     {
         var participant = identities.Read(context);
         if (participant is null) return Results.Problem("Set your name before voting.", statusCode: 401);
         var voter = EntraIdentity.VoterKey(context.User);
         if (voter is null) return Results.Problem("Sign in with an organisational Microsoft Entra account to vote.", statusCode: 401);
+        var delta = input.Kind switch { "like" => 1, "dislike" => -1, "epic" => 3, _ => 0 };
+        if (input.RequestId == Guid.Empty || delta == 0) return Invalid("Choose Like the point, Don't like this point, or EPIC POINT! with a new reaction identifier.");
         var token = context.RequestAborted;
         try
         {
             await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
-            var board = await db.Boards.AsNoTracking().SingleAsync(token);
-            var eligible = board.VotingOpen && await db.Questions
+            var existing = await db.Votes.AsNoTracking().SingleOrDefaultAsync(v => v.Id == input.RequestId, token);
+            if (existing is not null) return SameReaction(existing, id, voter.Value, delta)
+                ? Results.NoContent() : Conflict();
+            var votingOpen = await db.Boards.AsNoTracking().Select(b => b.VotingOpen).SingleAsync(token);
+            var eligible = votingOpen && await db.Questions
                 .AnyAsync(q => q.Id == id && q.Visible && !q.Answered, token);
             if (!eligible) return Results.Problem("Voting is closed for this question.", statusCode: 409);
-            if (await db.Votes.AnyAsync(v => v.QuestionId == id && v.ParticipantId == voter, token))
-                return Results.NoContent();
-            db.Votes.Add(new Vote { QuestionId = id, ParticipantId = voter.Value });
+            db.Votes.Add(new Vote { Id = input.RequestId, QuestionId = id, ParticipantId = voter.Value, Delta = delta });
             await db.SaveChangesAsync(token);
             await transaction.CommitAsync(token);
         }
         catch (DbUpdateException exception) when (IsDuplicate(exception.InnerException))
         {
-            // The composite primary key is the final authority when requests arrive concurrently.
-            return Results.NoContent();
+            var existing = await db.Votes.AsNoTracking().SingleOrDefaultAsync(v => v.Id == input.RequestId, token);
+            return existing is not null && SameReaction(existing, id, voter.Value, delta) ? Results.NoContent() : Conflict();
         }
         catch (Exception exception) when (IsContention(exception))
         {
             return Results.Problem("Another update is in progress. Please retry your vote.", statusCode: 409);
         }
-        await live.Notify();
+        await live.Notify(new LiveReaction(input.RequestId, id, input.Kind));
         return Results.NoContent();
     }
+
+    private static bool SameReaction(Vote vote, Guid question, Guid voter, int delta) =>
+        vote.QuestionId == question && vote.ParticipantId == voter && vote.Delta == delta;
 
     private static async Task<IResult> Mutate(HttpContext context, FiresideDb db, LiveUpdates live,
         Func<Board, Task<IResult?>> change)

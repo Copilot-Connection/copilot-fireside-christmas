@@ -67,6 +67,14 @@ builder.Services.AddRateLimiter(options =>
             Window = TimeSpan.FromMinutes(1),
             QueueLimit = 0
         }));
+    options.AddPolicy("voting", context => RateLimitPartition.GetFixedWindowLimiter(
+        EntraIdentity.VoterKey(context.User)?.ToString() ?? "unauthenticated",
+        _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 20,
+            Window = TimeSpan.FromSeconds(10),
+            QueueLimit = 0
+        }));
 });
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
 {

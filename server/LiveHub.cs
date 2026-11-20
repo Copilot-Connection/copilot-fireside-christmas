@@ -9,11 +9,13 @@ public sealed class LiveHub : Hub
 
 public sealed class LiveUpdates(IHubContext<LiveHub> hub, ILogger<LiveUpdates> logger)
 {
-    public async Task Notify()
+    public async Task Notify(LiveReaction? reaction = null)
     {
         try
         {
-            await hub.Clients.All.SendAsync("boardChanged");
+            var changed = hub.Clients.All.SendAsync("boardChanged");
+            if (reaction is null) await changed;
+            else await Task.WhenAll(changed, hub.Clients.All.SendAsync("reaction", reaction));
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {

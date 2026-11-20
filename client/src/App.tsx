@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react';
-import { ArrowRight, ArrowUpRight, Check, ChevronDown, ChevronUp, Flame, MessagesSquare, Radio, ShieldCheck, Snowflake, Users } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, Check, Flame, Radio, ShieldCheck, Snowflake } from 'lucide-react';
 import { request, write, errorMessage } from './api';
-import type { Question, Session } from './types';
+import type { Question, ReactionKind, Session } from './types';
 import { useBoard } from './useBoard';
 import { Admin } from './Admin';
+import { ReactionButtons, ReactionOverlay } from './Reactions';
 
 export function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -16,11 +17,27 @@ export function App() {
     } catch (error) { setSessionError(errorMessage(error)); }
   }, []);
   useEffect(() => { void refreshSession(); }, [refreshSession]);
+  if (session && !sessionError && !adminPage && window.location.pathname !== '/privacy' && session.participantName)
+    return <Audience session={session} refreshSession={refreshSession} />;
+  return <PageFrame session={session} adminPage={adminPage} fillViewport={!adminPage && window.location.pathname !== '/privacy'}>
+    {sessionError ? <div className="center-state"><ErrorNotice message={sessionError} />
+      <button onClick={() => void refreshSession()}>Try again</button></div>
+      : !session ? <Loading /> : adminPage
+        ? <Admin session={session} refreshSession={refreshSession} />
+        : window.location.pathname === '/privacy' ? <Privacy />
+          : <Welcome session={session} onJoin={refreshSession} />}
+  </PageFrame>;
+}
+
+function PageFrame({ session, adminPage = false, fillViewport = false, children }: {
+  session: Session | null; adminPage?: boolean; fillViewport?: boolean; children: ReactNode;
+}) {
   return <div className={`site-shell ${adminPage ? '' : 'fireside-surface'}`}>
     {!adminPage && <svg className="fireside-mesh" viewBox="0 0 1400 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
       <path d="M0 80 260 10 180 310 0 460M260 10 530 180 180 310 380 590 0 460M530 180 780 20 900 350 530 180 380 590 800 720 900 350 1250 120 1400 260M780 20 1250 120 1400 0M900 350 1220 620 1400 420M380 590 240 900M800 720 1220 620 1400 900M800 720 780 900" />
     </svg>}
     <a className="skip-link" href="#main">Skip to content</a>
+    <div className={fillViewport ? 'viewport-frame' : undefined}>
     <header className="site-header">
       <a className="brand" href="/" aria-label="Copilot Fireside Chat home">
         <Flame className="brand-symbol" size={28} aria-hidden="true" />
@@ -32,16 +49,8 @@ export function App() {
     </header>
     {session?.demo && <div className="demo-strip"><Snowflake size={15} aria-hidden="true" /> LOCAL DEMO
       <span>Sample panellists &amp; questions. Not a scheduled event.</span></div>}
-    <main id="main">
-      {sessionError ? <div className="center-state"><ErrorNotice message={sessionError} />
-        <button onClick={() => void refreshSession()}>Try again</button></div>
-        : !session ? <Loading /> : adminPage
-          ? <Admin session={session} refreshSession={refreshSession} />
-          : window.location.pathname === '/privacy' ? <Privacy />
-          : session.participantName
-            ? <Audience session={session} refreshSession={refreshSession} />
-            : <Welcome session={session} onJoin={refreshSession} />}
-    </main>
+    <main id="main">{children}</main>
+    </div>
     <footer className="site-footer">
       <a className="footer-title" href="https://copilotfireside.chat/" target="_blank" rel="noreferrer">Visit Copilot Fireside Chat <ArrowUpRight size={14} aria-hidden="true" /></a>
       <a href="/privacy">Privacy &amp; participation</a>
@@ -83,29 +92,42 @@ function NameForm({ session, onSaved, initial = '' }: { session: Session; onSave
       </button>
     </div>
     {error && <ErrorNotice message={error} />}
-    <p className="fine-print">No account needed to view. To upvote, sign in with a work or school Microsoft Entra account.
+    <p className="fine-print">No account needed to view. To react, sign in with a work or school Microsoft Entra account.
       An essential cookie remembers your display name for 30 days; your name is not public.</p>
   </form>;
 }
 
 function Welcome({ session, onJoin }: { session: Session; onJoin: () => Promise<void> }) {
+  const { board, error, refresh, reactions } = useBoard(false, true);
+  if (!board) return error ? <div className="center-state"><ErrorNotice message={error} />
+    <button onClick={() => void refresh()}>Try again</button></div> : <Loading />;
   return <section className="welcome">
+    <ReactionOverlay reactions={reactions} />
+    <LandingArtwork source={board.landingImageUrl} description={board.landingImageDescription} />
     <div className="welcome-copy">
       <h1>Come in.<br />Join the fireside.</h1>
       <p className="intro">The Christmas panel, one conversation at a time.
         Set your name to follow what is happening now.</p>
       <NameForm session={session} onSaved={onJoin} />
     </div>
-    <figure className="welcome-photo">
-      <img src="/branding/fireside-scene.jpg" alt="The existing Copilot Fireside Chat brand photograph, featuring a welcoming fireplace" />
-      <figcaption>From the Copilot Fireside Chat community.<br />Brand photograph - not this event's confirmed panel.</figcaption>
-    </figure>
   </section>;
 }
 
+function LandingArtwork({ source, description }: { source: string; description: string }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [source]);
+  return <div className="landing-artwork">
+    {failed ? <ErrorNotice message="The event image could not load. Refresh the page or contact the host." />
+      : <a href={source} target="_blank" rel="noreferrer" aria-label="Open full-size event image">
+        <img src={source} alt={description} width={1920} height={1080} onError={() => setFailed(true)} />
+      </a>}
+  </div>;
+}
+
 function Audience({ session, refreshSession }: { session: Session; refreshSession: () => Promise<void> }) {
-  const { board, error, connection, refresh } = useBoard(false, true);
-  const [filter, setFilter] = useState<'all' | 'mine' | 'answered'>('all');
+  const { board, error, connection, refresh, reactions } = useBoard(false, true);
+  const [filter, setFilter] = useState<'all' | 'answered'>('all');
+  const [view, setView] = useState<'live' | 'questions' | 'panel'>('live');
   const [pending, setPending] = useState<string | null>(null);
   const [voteError, setVoteError] = useState('');
   const [editName, setEditName] = useState(false);
@@ -119,22 +141,27 @@ function Audience({ session, refreshSession }: { session: Session; refreshSessio
     } catch (error) { setVoteError(errorMessage(error)); }
     finally { setPending(null); }
   }
-  async function vote(id: string) {
+  async function vote(id: string, kind: ReactionKind) {
     setPending(id);
     setVoteError('');
     try {
-      await write(`/api/questions/${id}/vote`, 'POST', session.csrfToken);
+      await write(`/api/questions/${id}/vote`, 'POST', session.csrfToken, { requestId: crypto.randomUUID(), kind });
       await refresh();
     } catch (error) { setVoteError(errorMessage(error)); }
     finally { setPending(null); }
   }
-  if (!board) return error ? <div className="center-state"><ErrorNotice message={error} />
-    <button onClick={() => void refresh()}>Try again</button></div> : <Loading />;
+  if (!board) return <PageFrame session={session} fillViewport>
+    {error ? <div className="center-state"><ErrorNotice message={error} />
+      <button onClick={() => void refresh()}>Try again</button></div> : <Loading />}
+  </PageFrame>;
   const current = board.questions.find(q => q.id === board.currentQuestionId);
-  const upNextCount = board.questions.filter(q => !q.answered && q.id !== current?.id).length;
-  const questions = board.questions.filter(q => q.id !== current?.id && (filter === 'answered' ? q.answered :
-    !q.answered && (filter === 'all' || q.hasVoted))).sort((a, b) => b.votes - a.votes || a.sortOrder - b.sortOrder);
-  return <>
+  const questions = board.questions.filter(q => filter === 'answered' ? q.answered : !q.answered)
+    .sort((a, b) => b.score - a.score || a.sortOrder - b.sortOrder);
+  const views = [
+    { id: 'live', label: 'Live' }, { id: 'questions', label: 'Questions & votes' }, { id: 'panel', label: 'Panellists' },
+  ] as const;
+  return <PageFrame session={session} fillViewport>
+    <ReactionOverlay reactions={reactions} />
     <div className="audience-bar">
       <span className={`connection ${connection === 'Live' ? 'connected' : ''}`} role="status">
         <span className="status-dot" /> {connection === 'Live' ? 'Connected to the fireside' : connection}
@@ -147,11 +174,27 @@ function Audience({ session, refreshSession }: { session: Session; refreshSessio
     </div>
     {editName && <div className="name-edit"><NameForm session={session} initial={session.participantName ?? ''}
       onSaved={async () => { await refreshSession(); setEditName(false); }} /></div>}
+    <div className="audience-tabs" role="tablist" aria-label="Fireside views" onKeyDown={event => {
+      const index = views.findIndex(item => item.id === view);
+      const next = event.key === 'ArrowRight' ? (index + 1) % views.length :
+        event.key === 'ArrowLeft' ? (index + views.length - 1) % views.length :
+          event.key === 'Home' ? 0 : event.key === 'End' ? views.length - 1 : -1;
+      if (next < 0) return;
+      event.preventDefault();
+      setView(views[next].id);
+      event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next].focus();
+    }}>
+      {views.map(item => <button key={item.id} id={`tab-${item.id}`} role="tab" aria-selected={view === item.id}
+        aria-controls={`panel-${item.id}`} tabIndex={view === item.id ? 0 : -1}
+        onClick={() => setView(item.id)}>{item.label}</button>)}
+    </div>
     <header className="event-heading"><h1>{board.title}</h1><p>{board.subtitle}</p></header>
     {error && <ErrorNotice message={`${error} The board may be out of date.`} />}
     {new URLSearchParams(location.search).has('authError') && <ErrorNotice message="Microsoft sign-in did not complete. Try again with a work or school account, or contact your organisation's administrator." />}
+    <div className="tab-panel activity-panel" role="tabpanel" id="panel-live" aria-labelledby="tab-live" hidden={view !== 'live'}>
     <CurrentActivity question={current} votingOpen={board.votingOpen} canVote={session.canVote}
-      pending={pending !== null} onVote={() => { if (current) void vote(current.id); }}>
+      imageUrl={board.landingImageUrl} imageDescription={board.landingImageDescription}
+      pending={pending !== null} onReact={kind => { if (current) void vote(current.id, kind); }}>
       {!session.canVote && <div className="activity-signin">
         {session.demo ? <button className="button-primary" disabled={pending !== null} onClick={() => void demoVoter()}>
           Sign in as demo voter <ArrowRight size={17} aria-hidden="true" /></button>
@@ -159,62 +202,54 @@ function Audience({ session, refreshSession }: { session: Session; refreshSessio
         <p>{session.demo ? 'Development-only sign-in simulation.' : 'Work or school accounts from any organisation. Viewing is public.'}</p>
       </div>}
     </CurrentActivity>
+    </div>
     {voteError && <ErrorNotice message={voteError} />}
-    <div className="audience-details">
-      <details className="questions-section">
-        <summary><MessagesSquare size={19} aria-hidden="true" /> Questions &amp; votes
-          <span>{upNextCount} up next</span><ChevronDown size={18} aria-hidden="true" /></summary>
-        <div className="disclosure-content">
+    <section className="tab-panel questions-section" role="tabpanel" id="panel-questions" aria-labelledby="tab-questions" hidden={view !== 'questions'}>
         <div className="queue-heading"><h2>Choose what comes next</h2><span className="voting-state">{board.votingOpen ? 'Voting open' : 'Voting paused'}</span></div>
-        {!session.canVote && <p className="section-description">Sign in above to upvote with your organisational Entra account.</p>}
+        {!session.canVote && <p className="section-description">Sign in on the Live tab with your organisational Entra account to react.</p>}
         <div className="tabs" aria-label="Filter questions">
-          <button aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>Up next <span>{upNextCount}</span></button>
-          <button aria-pressed={filter === 'mine'} onClick={() => setFilter('mine')}>My votes</button>
+          <button aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>Open questions <span>{board.questions.filter(q => !q.answered).length}</span></button>
           <button aria-pressed={filter === 'answered'} onClick={() => setFilter('answered')}>Answered <Check size={14} aria-hidden="true" /></button>
         </div>
         <div className="question-list">
           {questions.length ? questions.map(question => <QuestionCard key={question.id} question={question}
             votingOpen={board.votingOpen && session.canVote}
-            pending={pending !== null} onVote={() => void vote(question.id)} />)
-            : <div className="empty-state"><p>{filter === 'mine' ? 'Your other voted questions will appear here.' :
-              filter === 'answered' ? 'Answered questions will appear here.' : 'The host will share more questions here.'}</p></div>}
+            pending={pending !== null} onReact={kind => void vote(question.id, kind)} />)
+            : <div className="empty-state"><p>{filter === 'answered' ? 'Answered questions will appear here.' : 'The host will share more questions here.'}</p></div>}
         </div>
-        <p className="fine-print voting-note"><ShieldCheck size={15} aria-hidden="true" /> One vote per question, per organisational Entra identity.
-          Changing your name, clearing cookies or using another browser does not reset votes for that identity.</p>
-        </div>
-      </details>
-      <details className="panel-section">
-        <summary><Users size={19} aria-hidden="true" /> Meet the panel
-          <span>{board.panellists.length} panellists</span><ChevronDown size={18} aria-hidden="true" /></summary>
-        <div className="disclosure-content">
+        <p className="fine-print voting-note"><ShieldCheck size={15} aria-hidden="true" /> React as often as you like while voting is open.
+          Likes add 1, dislikes subtract 1, and epic points add 3. Short per-account limits keep the room responsive.</p>
+    </section>
+    <section className="tab-panel panel-section" role="tabpanel" id="panel-panel" aria-labelledby="tab-panel" hidden={view !== 'panel'}>
+          <h2>Meet the panel</h2>
           {board.panellists.length ? board.panellists.map(person => <article className="person-card" key={person.id}>
             <h3>{person.name}</h3><span className="person-role">{person.role}</span>
             {person.bio && <p>{person.bio}</p>}
           </article>) : <p className="section-description">The host hasn't announced the panel yet.</p>}
-        </div>
-      </details>
-    </div>
-  </>;
+    </section>
+  </PageFrame>;
 }
 
-export function CurrentActivity({ question, votingOpen, canVote, pending, onVote, children }: {
+export function CurrentActivity({ question, imageUrl, imageDescription, votingOpen, canVote, pending, onReact, children }: {
+  imageUrl: string; imageDescription: string;
   question?: Question; votingOpen: boolean; canVote: boolean; pending: boolean;
-  onVote: () => void; children?: ReactNode;
+  onReact: (kind: ReactionKind) => void; children?: ReactNode;
 }) {
-  return <section className={`activity-stage ${question ? 'current-question' : 'waiting-activity'}`} aria-labelledby="activity-title">
-    <div className="activity-copy" key={question?.id ?? 'waiting'}>
-      <h2 id="activity-title" aria-live="polite" aria-atomic="true">{question?.text ?? 'A seat by the fire.'}</h2>
-      <p className="activity-description">{question?.category || (question ? 'The current conversation.' :
-        'The host is setting the scene. The next discussion will appear here automatically.')}</p>
-      <div className="activity-meta"><span><Radio size={17} aria-hidden="true" />{question ? 'Discussing now' : 'Waiting for the host'}</span>
-        {question && <span>{question.votes} {question.votes === 1 ? 'vote' : 'votes'}</span>}</div>
-      {canVote && question && <button className="button-primary activity-vote" onClick={onVote}
-        disabled={pending || question.hasVoted || !votingOpen || question.answered}
-        aria-label={`${question.hasVoted ? 'Voted for' : 'Upvote'}: ${question.text}`} aria-pressed={question.hasVoted}>
-        {question.hasVoted ? <Check size={18} aria-hidden="true" /> : <ChevronUp size={20} aria-hidden="true" />}
-        {question.hasVoted ? 'Your vote is in' : !votingOpen ? 'Voting paused' : pending ? 'Saving vote...' : 'Upvote this question'}
-      </button>}
-      {canVote && !question && <p className="ready-note"><Check size={16} aria-hidden="true" /> Signed in and ready to vote.</p>}
+  if (!question) return <section className="activity-stage landing-stage" aria-label="Event landing page">
+    <LandingArtwork source={imageUrl} description={imageDescription} />
+    <div className="landing-controls">
+      <div className="activity-meta"><span><Radio size={17} aria-hidden="true" />Waiting for the host</span></div>
+      {canVote ? <p className="ready-note"><Check size={16} aria-hidden="true" /> Signed in and ready to vote.</p> : children}
+    </div>
+  </section>;
+  return <section className="activity-stage current-question" aria-labelledby="activity-title">
+    <div className="activity-copy" key={question.id}>
+      <h2 id="activity-title" aria-live="polite" aria-atomic="true">{question.text}</h2>
+      <p className="activity-description">{question.category || 'The current conversation.'}</p>
+      <div className="activity-meta"><span><Radio size={17} aria-hidden="true" />Discussing now</span>
+        <output aria-live="polite">{question.score} {Math.abs(question.score) === 1 ? 'point' : 'points'}</output></div>
+      {canVote && <ReactionButtons question={question} enabled={votingOpen} pending={pending} onReact={onReact} />}
+      {canVote && !votingOpen && <p className="section-description">Voting is paused.</p>}
       {children}
     </div>
     <figure className="activity-photo">
@@ -224,20 +259,14 @@ export function CurrentActivity({ question, votingOpen, canVote, pending, onVote
   </section>;
 }
 
-export function QuestionCard({ question, votingOpen, pending, onVote }: {
-  question: Question; votingOpen: boolean; pending: boolean; onVote: () => void;
+export function QuestionCard({ question, votingOpen, pending, onReact }: {
+  question: Question; votingOpen: boolean; pending: boolean; onReact: (kind: ReactionKind) => void;
 }) {
   return <article className="question-card">
-    <button className={`vote-button ${question.hasVoted ? 'has-voted' : ''}`}
-      onClick={onVote} disabled={pending || question.hasVoted || !votingOpen || question.answered}
-      aria-label={`${question.hasVoted ? 'Voted for' : 'Upvote'}: ${question.text}`}
-      aria-pressed={question.hasVoted}>
-      {question.hasVoted ? <Check size={19} aria-hidden="true" /> : <ChevronUp size={22} aria-hidden="true" />}
-      <strong>{question.votes}</strong><span>{question.hasVoted ? 'VOTED' : 'VOTES'}</span>
-    </button>
     <div><div className="question-tags"><span>{question.category || 'Around the fire'}</span>
       {question.answered && <span>Answered</span>}</div>
-      <h3>{question.text}</h3></div>
+      <h3>{question.text}</h3><output className="question-score" aria-live="polite">{question.score} {Math.abs(question.score) === 1 ? 'point' : 'points'}</output></div>
+    <ReactionButtons question={question} enabled={votingOpen} pending={pending} onReact={onReact} />
   </article>;
 }
 
@@ -249,21 +278,22 @@ export function Privacy() {
   return <article className="privacy-page">
     <h1>Privacy &amp; participation</h1>
     <p>You don't need a Microsoft account to view the audience page. Set a display name to enter.
-      Upvoting requires a work or school Microsoft Entra account from any organisation.
+      Sending reactions requires a work or school Microsoft Entra account from any organisation.
       Your display name is stored in a protected, HTTP-only essential cookie, not in the vote database or a public attendee list.</p>
     <h2>What we store</h2><p>The display-name cookie lasts 30 days. When you sign in, a separate protected authentication
-      cookie holds identity claims for up to two hours. The vote database stores a stable hash derived from your Entra
-      tenant and user object identifiers against each question you upvote; it does not store raw identifiers,
-      your display name or email. This is pseudonymous personal data, not anonymous data.</p>
-    <h2>Voting follows your account, not your browser</h2><p>The server allows one vote per question per organisational
-      Entra tenant/user identity. Signing back in after clearing cookies or on another browser keeps that identity's
-      votes. Different organisational accounts or guest identities may represent the same human; the app does not
-      claim one vote per verified human. Some organisations require administrator consent before sign-in.</p>
+      cookie holds identity claims for up to two hours. Each accepted reaction stores its question, score change,
+      request identifier and a stable hash derived from your Entra tenant/user identifiers. It does not store raw
+      identity identifiers, your display name or email. This is pseudonymous personal data, not anonymous data.</p>
+    <h2>Repeatable reactions</h2><p>You can react repeatedly while voting is open: likes add 1 point, dislikes subtract
+      1 and epic points add 3. Short per-account rate limits protect the live experience. A festive animation is
+      broadcast without your name or identity; old animations are not replayed after reconnecting.
+      Some organisations require administrator consent before sign-in.</p>
     <h2>Administrators</h2><p>The host desk requires both the configured host tenant and an explicitly assigned
       Fireside.Admin application role. A role assigned in another tenant does not grant host access.
       Microsoft handles sign-in for voters and administrators.</p>
     <h2>Retention and support</h2><p>Event hosts control the questions and vote records and must publish their contact
-      and event retention policy before going live. Removing a question also removes its votes.
+      and event retention policy before going live. Removing a question also removes its reactions. Uploaded landing
+      artwork and its description are public; hosts should remove private metadata before uploading.
       Hosting services may retain operational logs according to the host's Azure settings; this application does not
       log display names or vote bodies.</p><a href="/">Back to the fireside <ArrowRight size={16} aria-hidden="true" /></a>
   </article>;

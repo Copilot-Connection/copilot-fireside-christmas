@@ -6,71 +6,70 @@ import type { Question } from './types';
 afterEach(cleanup);
 const question: Question = {
   id: '1', text: 'What should we build?', category: 'Looking ahead', visible: true,
-  answered: false, sortOrder: 0, votes: 4, hasVoted: false,
+  answered: false, sortOrder: 0, score: 4,
 };
-describe('Audience question voting', () => {
-  it('lets an eligible participant vote and presents server vote totals', () => {
-    const vote = vi.fn();
-    render(<QuestionCard question={question} votingOpen pending={false} onVote={vote} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Upvote: What should we build?' }));
-    expect(vote).toHaveBeenCalledOnce();
-    expect(screen.getByText('4')).toBeInTheDocument();
-  });
+const artwork = { imageUrl: '/branding/christmas-fireside.png', imageDescription: 'Event poster' };
+
+describe('Repeatable audience reactions', () => {
   it.each([
-    { hasVoted: true, votingOpen: true, answered: false, pending: false },
-    { hasVoted: false, votingOpen: false, answered: false, pending: false },
-    { hasVoted: false, votingOpen: true, answered: true, pending: false },
-    { hasVoted: false, votingOpen: true, answered: false, pending: true },
-  ])('disables ineligible votes: %j', ({ votingOpen, pending, ...flags }) => {
-    const vote = vi.fn();
-    render(<QuestionCard question={{ ...question, ...flags }}
-      votingOpen={votingOpen} pending={pending} onVote={vote} />);
-    fireEvent.click(screen.getByRole('button'));
-    expect(screen.getByRole('button')).toBeDisabled();
-    expect(vote).not.toHaveBeenCalled();
+    ['Like the point', 'like'], ["Don't like this point", 'dislike'], ['EPIC POINT!', 'epic'],
+  ])('sends the selected action: %s', (label, kind) => {
+    const react = vi.fn();
+    render(<QuestionCard question={question} votingOpen pending={false} onReact={react} />);
+    fireEvent.click(screen.getByRole('button', { name: `${label}: ${question.text}` }));
+    expect(react).toHaveBeenCalledWith(kind);
+    expect(screen.getByText('4 points')).toBeInTheDocument();
   });
+
+  it.each([
+    { votingOpen: false, answered: false, pending: false },
+    { votingOpen: true, answered: true, pending: false },
+    { votingOpen: true, answered: false, pending: true },
+  ])('disables all three actions when ineligible: %j', ({ votingOpen, pending, answered }) => {
+    const react = vi.fn();
+    render(<QuestionCard question={{ ...question, answered }} votingOpen={votingOpen} pending={pending} onReact={react} />);
+    for (const button of screen.getAllByRole('button')) {
+      expect(button).toBeDisabled();
+      fireEvent.click(button);
+    }
+    expect(react).not.toHaveBeenCalled();
+  });
+
   it('renders untrusted question text as text rather than markup', () => {
     const { container } = render(<QuestionCard question={{ ...question, text: '<img src=x onerror=alert(1)>' }}
-      votingOpen pending={false} onVote={vi.fn()} />);
+      votingOpen pending={false} onReact={vi.fn()} />);
     expect(container.querySelector('img')).toBeNull();
     expect(screen.getByRole('heading', { level: 3 })).toHaveTextContent('<img src=x onerror=alert(1)>');
   });
+});
 
-  describe('Current activity', () => {
-    it('lets public viewers read the discussion without enabling a vote', () => {
-      render(<CurrentActivity question={question} votingOpen canVote={false} pending={false} onVote={vi.fn()}>
-        <a href="/auth/login">Sign in to vote</a>
-      </CurrentActivity>);
-      expect(screen.getByRole('heading', { name: question.text })).toBeVisible();
-      expect(screen.getByText('Discussing now')).toBeVisible();
-      expect(screen.queryByRole('button')).not.toBeInTheDocument();
-      expect(screen.getByRole('link', { name: 'Sign in to vote' })).toHaveAttribute('href', '/auth/login');
-    });
+describe('Current activity', () => {
+  it('lets public viewers read the discussion without enabling reactions', () => {
+    render(<CurrentActivity {...artwork} question={question} votingOpen canVote={false} pending={false} onReact={vi.fn()}>
+      <a href="/auth/login">Sign in to vote</a>
+    </CurrentActivity>);
+    expect(screen.getByRole('heading', { name: question.text })).toBeVisible();
+    expect(screen.getByText('Discussing now')).toBeVisible();
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Sign in to vote' })).toHaveAttribute('href', '/auth/login');
+  });
 
-    it('lets an eligible voter upvote the current discussion directly', () => {
-      const vote = vi.fn();
-      render(<CurrentActivity question={question} votingOpen canVote pending={false} onVote={vote} />);
-      fireEvent.click(screen.getByRole('button', { name: `Upvote: ${question.text}` }));
-      expect(vote).toHaveBeenCalledOnce();
-      expect(screen.getByText('4 votes')).toBeVisible();
-    });
+  it('allows the same reaction again instead of permanently disabling a voted question', () => {
+    const react = vi.fn();
+    render(<CurrentActivity {...artwork} question={question} votingOpen canVote pending={false} onReact={react} />);
+    const like = screen.getByRole('button', { name: `Like the point: ${question.text}` });
+    fireEvent.click(like);
+    fireEvent.click(like);
+    expect(react).toHaveBeenNthCalledWith(1, 'like');
+    expect(react).toHaveBeenNthCalledWith(2, 'like');
+    expect(like).toBeEnabled();
+  });
 
-    it.each([
-      { hasVoted: true, votingOpen: true, pending: false, label: 'Your vote is in' },
-      { hasVoted: false, votingOpen: false, pending: false, label: 'Voting paused' },
-      { hasVoted: false, votingOpen: true, pending: true, label: 'Saving vote...' },
-    ])('makes the current vote state explicit: $label', ({ hasVoted, votingOpen, pending, label }) => {
-      render(<CurrentActivity question={{ ...question, hasVoted }} votingOpen={votingOpen}
-        canVote pending={pending} onVote={vi.fn()} />);
-      expect(screen.getByRole('button')).toBeDisabled();
-      expect(screen.getByRole('button')).toHaveTextContent(label);
-    });
-
-    it('does not present a queued question as the current discussion while waiting', () => {
-      render(<CurrentActivity votingOpen canVote pending={false} onVote={vi.fn()} />);
-      expect(screen.getByText('Waiting for the host')).toBeVisible();
-      expect(screen.queryByRole('button')).not.toBeInTheDocument();
-      expect(screen.getByText('Signed in and ready to vote.')).toBeVisible();
-    });
+  it('shows the configured landing image rather than pretending a queued question is current', () => {
+    render(<CurrentActivity {...artwork} votingOpen canVote pending={false} onReact={vi.fn()} />);
+    expect(screen.getByText('Waiting for the host')).toBeVisible();
+    expect(screen.getByRole('img', { name: 'Event poster' })).toHaveAttribute('src', artwork.imageUrl);
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    expect(screen.getByText('Signed in and ready to vote.')).toBeVisible();
   });
 });

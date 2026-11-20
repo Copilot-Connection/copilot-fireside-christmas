@@ -20,11 +20,11 @@ export function write<T>(path: string, method: string, token: string, body?: unk
   return request<T>(path, {
     method,
     headers: {
-      'Content-Type': 'application/json',
+      'Content-Type': body instanceof Blob ? 'application/octet-stream' : 'application/json',
       'X-CSRF-TOKEN': token,
       ...(revision === undefined ? {} : { 'If-Match': `"${revision}"` }),
     },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    ...(body === undefined ? {} : { body: body instanceof Blob ? body : JSON.stringify(body) }),
   });
 }
 

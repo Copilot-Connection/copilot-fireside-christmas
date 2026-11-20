@@ -1,7 +1,7 @@
 # Copilot Fireside Chat · Christmas edition
 
 A runnable React + ASP.NET Core application for a live Christmas panel. The audience
-sets a display name to view without signing in. **Upvoting requires a work or school
+sets a display name to view without signing in. **Reacting requires a work or school
 Microsoft Entra account from any organisation**; the host desk requires the host
 tenant and an explicit application role. Designed for **Azure App Service**, not
 Static Web Apps.
@@ -11,27 +11,34 @@ workflows have been created.** Scaffolding and provisioning require separate app
 
 ## What it does
 
-- Public audience page focused on the current discussion, with a direct vote
-  action. Questions, favourites, answered questions and panellist bios sit in
-  secondary expandable sections. If no discussion is selected, a waiting state
-  appears rather than choosing a question on the host's behalf.
+- Public audience page focused on a viewport-filling live discussion. Top tabs
+  switch between Live, Questions & votes, and Panellists without leaving the page,
+  with arrow/Home/End keyboard navigation. Short screens and long content scroll
+  naturally; nothing is clipped to a fixed height.
+- The default landing view uses a local copy of the user-selected December event
+  poster. Hosts can upload a replacement PNG/JPEG and accessible description,
+  restore the default, or select **Show landing page** to stop the discussion.
 - Name-to-view participation with a protected HTTP-only display-name cookie.
   Names are not authentication and are not public. Viewing and SignalR remain
   anonymous; the voting API requires a validated organisational Entra identity.
-- One vote per question per Entra tenant/user object identity, enforced by a
-  database primary key using a stable pseudonymous hash of `tid` + `oid`. Clearing
-  cookies, changing display names or signing into another browser does not reset
-  that identity's vote. This is **not one vote per verified human**: a person may
-  hold multiple organisational accounts or guest identities.
+- Three repeatable actions: **Like the point** adds 1, **Don't like this point**
+  subtracts 1, and **EPIC POINT!** adds 3. Scores may be negative. Every accepted
+  action is a durable ledger entry; a request UUID prevents retries from scoring
+  or broadcasting twice, rather than restricting a person to one vote.
+- Everyone connected sees the matching original bauble, mischievous elf or large
+  present rise from the bottom and fade at roughly one-third viewport height.
+  Reduced motion shows a brief stationary reaction instead. Reactions are transient,
+  capped at 30 visible items per client, and never replayed after reconnecting.
 - Host desk at `/admin`: create, edit, order, publish, hide and delete panellists and
   questions; select the current discussion; mark questions answered; pause voting;
-  edit the event title and subtitle. New content is hidden by default.
+  edit the event title and subtitle; manage the landing artwork. New questions and
+  panellists are hidden by default.
 - Server-enforced host tenant plus admin role, CSRF protection, secure production cookies, same-origin
   APIs, validated input, rate-limited participation and revision-checked host edits.
 - SignalR invalidations after committed writes; clients refetch a filtered snapshot
   on notification, reconnect, tab wake-up and every 15 seconds. Hidden material never
   leaves the admin API. The public hub has no client-callable publishing methods.
-- SQL transactions and a composite vote key prevent duplicate concurrent votes.
+- SQL transactions and a reaction-request primary key prevent duplicate retries.
   Stale host edits and database contention return a visible retry/conflict response.
 - Production starts only with real Entra, SQL and Azure SignalR configuration.
   There is no production anonymous-admin shortcut.
@@ -50,10 +57,10 @@ dotnet run --project .\server\Fireside.csproj --launch-profile Demo
 
 Open http://127.0.0.1:5180 and http://127.0.0.1:5180/admin in separate browser
 contexts. Set an audience name, then choose **Sign in as demo voter** to simulate
-Entra voting. Viewing without that step works; upvotes remain disabled. Choose
+Entra voting. Viewing without that step works; reaction buttons remain disabled. Choose
 **Enter demo host desk** on the admin page. Publish a question, discuss it and vote
 from the audience window. Demo voter sign-in represents one fixed sample identity
-across browsers, not a real Microsoft account.
+across browsers, not a real Microsoft account. That identity can react repeatedly.
 
 The explicit `Demo` launch profile sets Development, uses local SQLite and enables
 the labelled local host/voter shortcuts. Demo startup is rejected outside Development or
@@ -90,12 +97,15 @@ dotnet publish .\server\Fireside.csproj -c Release -o .\server\bin\publish
 
 Server integration tests exercise host-tenant/role restrictions, anonymous/forged
 participant identities, malformed/personal identity rejection, cross-tenant voting,
-CSRF enforcement, concurrent duplicate votes, cross-browser uniqueness, renaming, hidden content,
-revision conflicts, voting eligibility, deletion cascades, live hub invalidation,
-and production demo rejection. React tests cover vote eligibility and safe text
+CSRF enforcement, idempotent concurrent requests, repeated +1/-1/+3 actions, negative scores,
+per-identity rate limits, hidden content, revision conflicts, voting eligibility,
+image upload bounds/permissions/persistence, deletion cascades, live hub reactions,
+and production demo rejection. React tests cover reaction eligibility and safe text
 rendering. Desktop and mobile Playwright scenarios use independent audience/host
 contexts to exercise public reading, explicit voter sign-in, moderation, voting,
-cross-browser uniqueness, voter denial at the host desk and reconnect recovery.
+repeatable scoring, matching reactions in independent browsers, reduced motion,
+one-third-height animation end state, image upload/reset, keyboard tabs, viewport
+fit, voter denial at the host desk and reconnect recovery.
 Browser tests add and clean up their own clearly named sample content; run them
 against a development event only.
 
@@ -117,6 +127,8 @@ flowchart LR
 React is served by the same ASP.NET application as the API and hub, avoiding
 cross-origin cookie and authentication configuration. Azure SignalR fans out a
 data-free change event; browsers then fetch their own permitted projection.
+Transient reaction messages contain only the request ID, question ID and action
+kind, never the voter's identity or name.
 SQL Server/Azure SQL is mandatory outside local development/tests: local SQLite
 must not be put on App Service ephemeral storage or used for scaled-out production.
 
@@ -226,8 +238,18 @@ speakers or questions, then exits. Use an operator identity with schema creation
 permissions for this step; use a separate least-privilege read/write app identity
 at runtime. Database creation is not automatically performed during normal startup.
 The initializer uses EF `EnsureCreated` for this first schema: it is **not** a
-schema upgrade system. Future model changes need reviewed migrations and a backup/
-restore plan; do not rerun it as an upgrade mechanism.
+schema upgrade system; do not rerun it as an upgrade mechanism.
+
+**Upgrading an existing database from the previous single-vote release:** stop
+writes and take a verified database backup. Run the scripts in `server/Schema`
+for your provider, **002-landing-image then 003-repeatable-reactions**, exactly
+once, using an operator identity. They add the public artwork fields and convert
+each existing vote into a +1 ledger entry without changing question totals.
+Do not run these scripts on a freshly initialized current schema. The SQLite
+upgrade has been exercised against the persistent demo database with row-count,
+per-question total, integrity and foreign-key checks. The SQL Server scripts
+still require review/execution in the approved target environment before release.
+Rehearse restore and compare totals before reopening writes.
 
 Before going live, verify real organisational sign-in from both the host tenant and
 an external tenant, personal-account rejection, external-tenant admin-role denial,
@@ -241,12 +263,21 @@ Operational notes:
 
 - `/health` is liveness, not a database/SignalR dependency readiness test.
 - Participation limits are per IP per app instance (60 writes/minute). Shared
-  venue networks may need an agreed limit; abuse-resistant cross-instance quotas
-  or verified-human voting require a separate design.
+  venue networks may need an agreed limit. Reactions are separately limited to
+  20 actions per 10 seconds per validated Entra identity per instance, with no
+  queue. A 429 response is shown to the voter; cross-instance quotas require a
+  separate design.
+- Uploaded landing artwork is public and stored durably in the same SQL database,
+  not the App Service filesystem. Hosts can upload PNG/JPEG files up to 2 MiB,
+  8192 pixels per side and 24 megapixels, with a description up to 300 characters.
+  The server checks signatures/header dimensions, not a full image decode, and
+  does not strip metadata: remove private metadata before upload. SVGs are not
+  accepted. Include image data in database backups and storage estimates.
 - Successful commits remain successful if notification delivery fails; the server
   logs the failure and client reconciliation repairs missed invalidations.
 - No display names, raw Entra identifiers or Entra tokens are stored in the event/vote
-  tables; vote keys are stable pseudonymous hashes, not anonymous identifiers. Publish an
+  tables; action records contain stable pseudonymous voter hashes, not anonymous
+  identifiers. Reactions are not a one-person-one-vote poll. Publish an
   event contact and retention policy on `/privacy` before live use; the current text
   explicitly identifies that operator-owned policy as still to be supplied.
 - Question deletion removes its votes. There is deliberately no unauthenticated
@@ -257,7 +288,10 @@ Operational notes:
 The public [Copilot Connection reference](https://github.com/Copilot-Connection/CCWeb2)
 links to the [actual Copilot Fireside Chat site](https://copilotfireside.chat/).
 This app reuses its existing fireplace brand photograph with an explicit caption,
-not as a claim about confirmed Christmas panellists. The audience defaults to the
+not as a claim about confirmed Christmas panellists. The default landing poster
+is the specific December image supplied by the user, copied locally rather than
+loaded from Elfsight at runtime; its event text is reproduced as artwork, without
+inferring a year or populating the sample panellist list. The audience follows the
 reference site's charcoal-and-gold direction, with its Krona One display and Inter
 body typefaces self-hosted, plus a newly drawn, restrained network motif.
 The simple flame icon is **not claimed to be

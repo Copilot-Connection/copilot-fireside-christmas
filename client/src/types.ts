@@ -3,11 +3,14 @@ export type Panellist = {
 };
 export type Question = {
   id: string; text: string; category: string; visible: boolean; answered: boolean;
-  sortOrder: number; votes: number; hasVoted: boolean;
+  sortOrder: number; score: number;
 };
+export type ReactionKind = 'like' | 'dislike' | 'epic';
+export type LiveReaction = { id: string; questionId: string; kind: ReactionKind; expires: number };
 export type Board = {
   title: string; subtitle: string; votingOpen: boolean; currentQuestionId: string | null;
   revision: number; panellists: Panellist[]; questions: Question[];
+  landingImageUrl: string; landingImageDescription: string; hasCustomLandingImage: boolean;
 };
 export type Session = {
   participantName: string | null; isAdmin: boolean; signedIn: boolean; canVote: boolean;
