@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { ArrowRight, ArrowUpRight, Check, Flame, Radio, ShieldCheck, Snowflake } from 'lucide-react';
 import { request, write, errorMessage } from './api';
-import type { Question, ReactionKind, Session } from './types';
+import type { Panellist, Question, ReactionKind, Session } from './types';
+import { DiscussionTimer, type TimerState } from './DiscussionTimer';
 import { useBoard } from './useBoard';
 import { Admin } from './Admin';
 import { ReactionButtons, ReactionOverlay } from './Reactions';
@@ -196,6 +197,8 @@ function Audience({ session, refreshSession }: { session: Session; refreshSessio
     {new URLSearchParams(location.search).has('authError') && <ErrorNotice message="Microsoft sign-in did not complete. Try again with a work or school account, or contact your organisation's administrator." />}
     <div className="tab-panel activity-panel" role="tabpanel" id="panel-live" aria-labelledby="tab-live" hidden={view !== 'live'}>
     <CurrentActivity question={current} votingOpen={board.votingOpen} canVote={session.canVote}
+      speaker={board.panellists.find(person => person.id === current?.speakerId)}
+      groupDiscussion={board.groupDiscussion} timer={board}
       imageUrl={board.landingImageUrl} imageDescription={board.landingImageDescription}
       pending={pending !== null} onReact={kind => { if (current) void vote(current.id, kind); }}>
       {!session.canVote && <div className="activity-signin">
@@ -208,7 +211,7 @@ function Audience({ session, refreshSession }: { session: Session; refreshSessio
     </div>
     {voteError && <ErrorNotice message={voteError} />}
     <section className="tab-panel questions-section" role="tabpanel" id="panel-questions" aria-labelledby="tab-questions" hidden={view !== 'questions'}>
-        <div className="queue-heading"><h2>Questions &amp; points</h2><span className="voting-state">{board.votingOpen ? 'Voting open' : 'Voting paused'}</span></div>
+        <div className="queue-heading"><h2>Questions &amp; points</h2><span className="voting-state">{board.groupDiscussion ? 'Group discussion' : board.votingOpen ? 'Voting open' : 'Voting paused'}</span></div>
         {!session.canVote && <p className="section-description">Sign in on the Live tab with your organisational Entra account to see your points and react to the current discussion.</p>}
         <div className="tabs" aria-label="Filter questions">
           <button aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>Open questions <span>{board.questions.filter(q => !q.answered).length}</span></button>
@@ -224,6 +227,7 @@ function Audience({ session, refreshSession }: { session: Session; refreshSessio
     <section className="tab-panel panel-section" role="tabpanel" id="panel-panel" aria-labelledby="tab-panel" hidden={view !== 'panel'}>
           <h2>Meet the panel</h2>
           {board.panellists.length ? board.panellists.map(person => <article className="person-card" key={person.id}>
+            {person.photoUrl && <PanellistPhoto person={person} />}
             <h3>{person.name}</h3><span className="person-role">{person.role}</span>
             {person.bio && <p>{person.bio}</p>}
           </article>) : <p className="section-description">The host hasn't announced the panel yet.</p>}
@@ -231,10 +235,12 @@ function Audience({ session, refreshSession }: { session: Session; refreshSessio
   </PageFrame>;
 }
 
-export function CurrentActivity({ question, imageUrl, imageDescription, votingOpen, canVote, pending, onReact, children }: {
+export function CurrentActivity({ question, imageUrl, imageDescription, votingOpen, canVote, pending, onReact, children,
+  speaker, groupDiscussion = false, timer }: {
   imageUrl: string; imageDescription: string;
   question?: Question; votingOpen: boolean; canVote: boolean; pending: boolean;
   onReact: (kind: ReactionKind) => void; children?: ReactNode;
+  speaker?: Panellist; groupDiscussion?: boolean; timer?: TimerState;
 }) {
   if (!question) return <section className="activity-stage landing-stage" aria-label="Event landing page">
     <LandingArtwork source={imageUrl} description={imageDescription} />
@@ -247,17 +253,34 @@ export function CurrentActivity({ question, imageUrl, imageDescription, votingOp
     <div className="activity-copy" key={question.id}>
       <h2 id="activity-title" aria-live="polite" aria-atomic="true">{question.text}</h2>
       <p className="activity-description">{question.category || 'The current conversation.'}</p>
-      <div className="activity-meta"><span><Radio size={17} aria-hidden="true" />Discussing now</span>
+      <div className="activity-meta"><span><Radio size={17} aria-hidden="true" />{groupDiscussion ? 'Group discussion' : 'Discussing now'}</span>
         <output aria-live="polite">{question.score} {Math.abs(question.score) === 1 ? 'point' : 'points'}</output></div>
-      {canVote && <ReactionButtons question={question} enabled={votingOpen} pending={pending} onReact={onReact} />}
-      {canVote && !votingOpen && <p className="section-description">Voting is paused.</p>}
-      {children}
+      {canVote && !groupDiscussion && <ReactionButtons question={question} enabled={votingOpen} pending={pending} onReact={onReact} />}
+      {canVote && !groupDiscussion && !votingOpen && <p className="section-description">Voting is paused.</p>}
+      {!groupDiscussion && children}
     </div>
-    <figure className="activity-photo">
+    {groupDiscussion ? <aside className="discussion-aside">
+      <h3>Open floor</h3><p>All panellists can join in. Voting is off during this discussion.</p>
+      {timer && <DiscussionTimer state={timer} />}
+    </aside> : speaker ? <aside className="speaker-card" aria-label="Current speaker">
+      <PanellistPhoto person={speaker} />
+      <div><h3>{speaker.name}</h3><p>{speaker.role}</p>{timer && <DiscussionTimer state={timer} />}</div>
+    </aside> : <figure className="activity-photo">
       <img src="/branding/fireside-scene.jpg" alt="" width={2280} height={1522} />
       <figcaption>Original show photograph,<br />not this event's confirmed panel.</figcaption>
-    </figure>
+    </figure>}
   </section>;
+}
+
+export function PanellistPhoto({ person }: { person: Panellist }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [person.photoUrl]);
+  return <div className="speaker-image">
+    {person.photoUrl && !failed ? <img src={person.photoUrl} alt={`Portrait of ${person.name}`}
+      width={320} height={320} onError={() => setFailed(true)} />
+      : <div className="speaker-placeholder"><Flame size={32} aria-hidden="true" />
+        <span>{failed ? 'Photo could not load' : 'No photo added'}</span></div>}
+  </div>;
 }
 
 export function QuestionCard({ question }: { question: Question }) {

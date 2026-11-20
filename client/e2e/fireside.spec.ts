@@ -1,5 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import type { Board } from '../src/types';
 
 async function join(page: Page, name: string) {
   await page.goto('/');
@@ -193,4 +195,131 @@ test('local default artwork, durable host uploads and keyboard tabs stay on the 
   await expect(page.locator('.landing-artwork img')).toHaveAttribute('src', '/branding/christmas-fireside.png');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await hostContext.close();
+});
+
+test('hosts assign uploaded speaker portraits and synchronise speaker and non-voting group timers', async ({ browser, page }) => {
+  test.setTimeout(60000);
+  const hostContext = await browser.newContext();
+  const host = await hostContext.newPage();
+  host.setDefaultTimeout(10000);
+  await hostDesk(host);
+  const original: Board = await (await host.request.get('/api/admin/board')).json();
+  const secondContext = await browser.newContext();
+  const second = await secondContext.newPage();
+  let personId: string | null = null;
+  let questionId: string | null = null;
+  async function adminWrite(url: string, method: string, data?: unknown) {
+    const board: Board = await (await host.request.get('/api/admin/board')).json();
+    const session = await (await host.request.get('/api/session')).json();
+    const response = await host.request.fetch(url, { method, data,
+      headers: { 'X-CSRF-TOKEN': session.csrfToken, 'If-Match': `"${board.revision}"` } });
+    expect(response.ok()).toBe(true);
+  }
+  try {
+    await join(page, 'Speaker timer viewer');
+    await page.getByRole('button', { name: 'Sign in as demo voter' }).click();
+    await join(second, 'Independent timer viewer');
+    await host.getByRole('button', { name: 'Edit timer lengths' }).click();
+    await host.getByLabel('Speaker timer (seconds)', { exact: true }).fill('30');
+    await host.getByLabel('Group discussion timer (seconds)', { exact: true }).fill('60');
+    await host.locator('.timing-form').getByRole('button', { name: 'Save changes' }).click();
+    const name = `Sample timed speaker ${Date.now()}`;
+    await host.getByRole('button', { name: 'Add panellist', exact: true }).click();
+    const editor = host.locator('.editor-form');
+    await editor.getByLabel('Name', { exact: true }).fill(name);
+    await editor.getByLabel('Role / introduction').fill('Browser test sample only');
+    await editor.getByLabel('Visible to audience').check();
+    await editor.getByRole('button', { name: 'Save changes' }).click();
+    const person = host.locator('.admin-list article').filter({ has: host.getByRole('heading', { name, exact: true }) });
+    await expect(person).toBeVisible();
+    personId = (await (await host.request.get('/api/admin/board')).json() as Board).panellists.find(p => p.name === name)!.id;
+    await person.getByRole('button', { name: 'Upload photo', exact: true }).click();
+    await host.getByLabel('Panellist image', { exact: true }).setInputFiles(path.resolve('public', 'branding', 'fireside-scene.jpg'));
+    await host.locator('.photo-form').getByRole('button', { name: 'Save changes' }).click();
+    await expect(person.getByRole('img', { name: `Portrait of ${name}` })).toBeVisible();
+    const text = `Sample timed discussion ${Date.now()}`;
+    await host.getByRole('button', { name: 'Add question', exact: true }).click();
+    await editor.getByLabel('Question', { exact: true }).fill(text);
+    await editor.getByRole('combobox', { name: 'Speaker', exact: true }).selectOption({ label: name });
+    for (let index = 0; index < original.panellists.length; index++)
+      await editor.getByRole('button', { name: `Move ${name} earlier`, exact: true }).click();
+    await editor.getByLabel('Visible to audience').check();
+    await editor.getByRole('button', { name: 'Save changes' }).click();
+    const question = host.locator('.admin-list article').filter({ has: host.getByRole('heading', { name: text, exact: true }) });
+    await expect(question).toBeVisible();
+    questionId = (await (await host.request.get('/api/admin/board')).json() as Board).questions.find(q => q.text === text)!.id;
+    await host.reload();
+    const saved: Board = await (await host.request.get('/api/admin/board')).json();
+    const ordered = saved.questions.find(q => q.id === questionId)!;
+    expect(ordered.speakerIds[0]).toBe(personId);
+    await question.getByRole('combobox', { name: 'Select speaker', exact: true }).selectOption({ label: name });
+    for (const viewer of [page, second]) {
+      await expect(viewer.locator('.current-question')).toContainText(name);
+      await expect(viewer.getByText('Timer not started', { exact: true })).toBeVisible();
+    }
+    await question.getByRole('button', { name: 'Start speaker timer', exact: true }).click();
+    for (const viewer of [page, second]) {
+      await expect(viewer.locator('.current-question')).toContainText(text);
+      await expect(viewer.getByRole('img', { name: `Portrait of ${name}`, exact: true })).toBeVisible();
+      await expect.poll(() => viewer.getByRole('img', { name: `Portrait of ${name}`, exact: true })
+        .evaluate((el: HTMLImageElement) => el.naturalWidth)).toBeGreaterThan(0);
+    }
+    const started: Board = await (await page.request.get('/api/board')).json();
+    expect(started.timerDurationSeconds).toBe(30);
+    const remaining = async (viewer: Page) => {
+      const value = await viewer.getByRole('timer').textContent();
+      const [minutes, seconds] = value!.split(':').map(Number);
+      return minutes * 60 + seconds;
+    };
+    expect(Math.abs(await remaining(page) - await remaining(second))).toBeLessThanOrEqual(1);
+    const before = await remaining(page);
+    await secondContext.setOffline(true);
+    await expect.poll(() => remaining(page)).toBeLessThan(before);
+    await secondContext.setOffline(false);
+    await second.reload();
+    await expect(second.getByRole('timer')).toBeVisible();
+    const recovered: Board = await (await second.request.get('/api/board')).json();
+    expect(recovered.timerStartedAt).toBe(started.timerStartedAt);
+    expect(Math.abs(await remaining(page) - await remaining(second))).toBeLessThanOrEqual(1);
+    const nextPerson = saved.panellists.find(p => p.id === ordered.speakerIds.find(id =>
+      id !== personId && saved.panellists.some(person => person.id === id && person.visible)))!;
+    await question.getByRole('button', { name: `Next speaker: ${text}`, exact: true }).click();
+    for (const viewer of [page, second]) {
+      await expect(viewer.locator('.current-question')).toContainText(nextPerson.name);
+      await expect(viewer.getByText('Timer not started', { exact: true })).toBeVisible();
+    }
+    await question.getByRole('button', { name: `Previous speaker: ${text}`, exact: true }).click();
+    await expect(second.locator('.current-question')).toContainText(name);
+    await expect(second.getByText('Timer not started', { exact: true })).toBeVisible();
+    await question.getByRole('button', { name: `Previous speaker: ${text}`, exact: true }).click();
+    const lastId = ordered.speakerIds.filter(id => saved.panellists.some(p => p.id === id && p.visible)).at(-1)!;
+    await expect(second.locator('.current-question')).toContainText(saved.panellists.find(p => p.id === lastId)!.name);
+    await question.getByRole('button', { name: `Next speaker: ${text}`, exact: true }).click();
+    await expect(second.locator('.current-question')).toContainText(name);
+    await question.getByRole('button', { name: 'Start group discussion', exact: true }).click();
+    for (const viewer of [page, second]) {
+      await expect(viewer.locator('.current-question').getByText('Group discussion', { exact: true })).toBeVisible();
+      await expect(viewer.locator('.current-question button')).toHaveCount(0);
+    }
+    const group: Board = await (await page.request.get('/api/board')).json();
+    expect(group.timerDurationSeconds).toBe(60);
+    expect(await remaining(page)).toBeGreaterThan(45);
+    const session = await (await page.request.get('/api/session')).json();
+    const attempt = await page.request.post(`/api/questions/${questionId}/vote`, {
+      headers: { 'X-CSRF-TOKEN': session.csrfToken }, data: { requestId: randomUUID(), kind: 'epic' },
+    });
+    expect(attempt.status()).toBe(409);
+    await host.getByRole('button', { name: 'Stop timer', exact: true }).click();
+    await expect(page.getByText('Timer not started', { exact: true })).toBeVisible();
+    await expect(page.locator('.current-question button')).toHaveCount(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  } finally {
+    if (questionId) await adminWrite(`/api/admin/questions/${questionId}`, 'DELETE');
+    if (personId) await adminWrite(`/api/admin/panellists/${personId}`, 'DELETE');
+    const latest: Board = await (await host.request.get('/api/admin/board')).json();
+    if (latest.speakerSeconds === 30 && latest.groupSeconds === 60)
+      await adminWrite('/api/admin/timing', 'PUT', { speakerSeconds: original.speakerSeconds, groupSeconds: original.groupSeconds });
+    await secondContext.close();
+    await hostContext.close();
+  }
 });

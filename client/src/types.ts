@@ -1,9 +1,9 @@
 export type Panellist = {
-  id: string; name: string; role: string; bio: string; visible: boolean; sortOrder: number;
+  id: string; name: string; role: string; bio: string; visible: boolean; sortOrder: number; photoUrl: string | null;
 };
 export type Question = {
   id: string; text: string; category: string; visible: boolean; answered: boolean;
-  sortOrder: number; score: number; myScore: number | null;
+  sortOrder: number; score: number; myScore: number | null; speakerId: string | null; speakerIds: string[];
 };
 export type ReactionKind = 'like' | 'dislike' | 'epic';
 export type LiveReaction = { id: string; questionId: string; kind: ReactionKind; expires: number };
@@ -11,6 +11,8 @@ export type Board = {
   title: string; subtitle: string; votingOpen: boolean; currentQuestionId: string | null;
   revision: number; panellists: Panellist[]; questions: Question[];
   landingImageUrl: string; landingImageDescription: string; hasCustomLandingImage: boolean;
+  speakerSeconds: number; groupSeconds: number; groupDiscussion: boolean;
+  timerStartedAt: string | null; timerDurationSeconds: number | null; serverTime: string;
 };
 export type Session = {
   participantName: string | null; isAdmin: boolean; signedIn: boolean; canVote: boolean;

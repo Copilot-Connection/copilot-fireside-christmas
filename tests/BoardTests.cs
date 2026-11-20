@@ -348,6 +348,188 @@ public sealed class BoardTests
     }
 
     [Fact]
+    public async Task Speaker_timers_are_authoritative_and_group_mode_blocks_votes_even_after_stopping_the_clock()
+    {
+        await using var site = new Site();
+        using var admin = await site.Client("Fireside.Admin");
+        using var voter = await site.Client("Attendee");
+        using var audience = await site.Client();
+        var board = (await audience.GetFromJsonAsync<BoardView>("/api/board"))!;
+        var question = board.Questions[0];
+        var speaker = board.Panellists[0];
+        var discussion = new DiscussionInput(question.Id, false);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await audience.PostAsJsonAsync("/api/admin/discussion", discussion)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await voter.PostAsJsonAsync("/api/admin/discussion", discussion)).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await admin.PostAsJsonAsync("/api/admin/discussion", discussion)).StatusCode);
+        await Token(admin);
+        await Revision(admin);
+        Assert.Equal(HttpStatusCode.BadRequest, (await admin.PostAsJsonAsync("/api/admin/discussion", discussion)).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await admin.PutAsJsonAsync("/api/admin/timing", new TimingInput(4, 30))).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await admin.PutAsJsonAsync($"/api/admin/questions/{question.Id}",
+            new QuestionInput(question.Text, question.Category, true, false, 0, Guid.NewGuid()))).StatusCode);
+        (await admin.PutAsJsonAsync($"/api/admin/questions/{question.Id}",
+            new QuestionInput(question.Text, question.Category, true, false, 0, speaker.Id))).EnsureSuccessStatusCode();
+        await Revision(admin);
+        (await admin.PutAsJsonAsync("/api/admin/timing", new TimingInput(15, 30))).EnsureSuccessStatusCode();
+        await Revision(admin);
+        (await admin.PostAsJsonAsync("/api/admin/discussion", discussion)).EnsureSuccessStatusCode();
+        var started = (await audience.GetFromJsonAsync<BoardView>("/api/board"))!;
+        Assert.Equal(speaker.Id, started.Questions[0].SpeakerId);
+        Assert.Equal(site.Clock.GetUtcNow(), started.TimerStartedAt);
+        Assert.Equal(15, started.TimerDurationSeconds);
+        Assert.False(started.GroupDiscussion);
+        Assert.Equal(HttpStatusCode.Conflict, (await admin.PostAsJsonAsync("/api/admin/discussion", discussion)).StatusCode);
+        site.Clock.Now = site.Clock.Now.AddSeconds(10);
+        var recovered = (await voter.GetFromJsonAsync<BoardView>("/api/board"))!;
+        Assert.Equal(started.TimerStartedAt, recovered.TimerStartedAt);
+        Assert.Equal(5, (recovered.TimerStartedAt!.Value.AddSeconds(recovered.TimerDurationSeconds!.Value) - recovered.ServerTime).TotalSeconds);
+        await Revision(admin);
+        (await admin.PutAsJsonAsync("/api/admin/timing", new TimingInput(20, 45))).EnsureSuccessStatusCode();
+        Assert.Equal(15, (await audience.GetFromJsonAsync<BoardView>("/api/board"))!.TimerDurationSeconds);
+        await Revision(admin);
+        (await admin.PostAsJsonAsync("/api/admin/discussion", discussion with { GroupDiscussion = true })).EnsureSuccessStatusCode();
+        var group = (await audience.GetFromJsonAsync<BoardView>("/api/board"))!;
+        Assert.True(group.GroupDiscussion);
+        Assert.True(group.VotingOpen);
+        Assert.Equal(45, group.TimerDurationSeconds);
+        await Token(voter);
+        (await voter.PutAsJsonAsync("/api/participant", new NameInput("Group listener"))).EnsureSuccessStatusCode();
+        Assert.Equal(HttpStatusCode.Conflict, (await React(voter, question.Id, "epic")).StatusCode);
+        await Revision(admin);
+        (await admin.DeleteAsync("/api/admin/discussion/timer")).EnsureSuccessStatusCode();
+        var stopped = (await audience.GetFromJsonAsync<BoardView>("/api/board"))!;
+        Assert.Null(stopped.TimerStartedAt);
+        Assert.True(stopped.GroupDiscussion);
+        Assert.Equal(HttpStatusCode.Conflict, (await React(voter, question.Id)).StatusCode);
+        await Revision(admin);
+        (await admin.PostAsJsonAsync("/api/admin/discussion", discussion)).EnsureSuccessStatusCode();
+        Assert.Equal(20, (await audience.GetFromJsonAsync<BoardView>("/api/board"))!.TimerDurationSeconds);
+        (await React(voter, question.Id)).EnsureSuccessStatusCode();
+        await Revision(admin);
+        (await admin.DeleteAsync($"/api/admin/panellists/{speaker.Id}")).EnsureSuccessStatusCode();
+        var deleted = (await audience.GetFromJsonAsync<BoardView>("/api/board"))!;
+        Assert.Null(deleted.Questions[0].SpeakerId);
+        Assert.Null(deleted.TimerStartedAt);
+    }
+
+    [Fact]
+    public async Task Panellist_uploads_persist_and_hidden_photos_and_assignments_are_not_public()
+    {
+        await using var site = new Site();
+        using var audience = await site.Client();
+        using var voter = await site.Client("Attendee");
+        using var admin = await site.Client("Fireside.Admin");
+        var board = (await audience.GetFromJsonAsync<BoardView>("/api/board"))!;
+        var person = board.Panellists[0];
+        var path = $"/api/admin/panellists/{person.Id}/photo";
+        Assert.Equal(HttpStatusCode.Unauthorized, (await audience.PutAsync(path, new ByteArrayContent(Pixel))).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await voter.PutAsync(path, new ByteArrayContent(Pixel))).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await admin.PutAsync(path, new ByteArrayContent(Pixel))).StatusCode);
+        await Token(admin);
+        Assert.Equal((HttpStatusCode)428, (await admin.PutAsync(path, new ByteArrayContent(Pixel))).StatusCode);
+        await Revision(admin);
+        Assert.Equal(HttpStatusCode.BadRequest, (await admin.PutAsync(path, new ByteArrayContent("<svg/>"u8.ToArray()))).StatusCode);
+        (await admin.PutAsync(path, new ByteArrayContent(Pixel))).EnsureSuccessStatusCode();
+        var publicPerson = (await audience.GetFromJsonAsync<BoardView>("/api/board"))!.Panellists[0];
+        using var image = await audience.GetAsync(publicPerson.PhotoUrl);
+        Assert.Equal("image/png", image.Content.Headers.ContentType!.MediaType);
+        Assert.Equal(Pixel, await image.Content.ReadAsByteArrayAsync());
+        using (var scope = site.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<FiresideDb>();
+            Assert.Equal(Pixel, (await db.Panellists.FindAsync(person.Id))!.PhotoData);
+        }
+        Assert.Equal(HttpStatusCode.Conflict, (await admin.PutAsync(path, new ByteArrayContent(Pixel))).StatusCode);
+        var revision = await Revision(admin);
+        var question = revision.Questions.Single(q => q.Visible);
+        (await admin.PutAsJsonAsync($"/api/admin/questions/{question.Id}",
+            new QuestionInput(question.Text, question.Category, true, false, 0, person.Id))).EnsureSuccessStatusCode();
+        await Revision(admin);
+        (await admin.PutAsJsonAsync($"/api/admin/panellists/{person.Id}",
+            new PanellistInput(person.Name, person.Role, person.Bio, false, 0))).EnsureSuccessStatusCode();
+        var hidden = (await audience.GetFromJsonAsync<BoardView>("/api/board"))!;
+        Assert.DoesNotContain(hidden.Panellists, p => p.Id == person.Id);
+        Assert.Null(hidden.Questions[0].SpeakerId);
+        Assert.Equal(HttpStatusCode.NotFound, (await audience.GetAsync(publicPerson.PhotoUrl)).StatusCode);
+        var adminBoard = await Revision(admin);
+        var privateUrl = adminBoard.Panellists.Single(p => p.Id == person.Id).PhotoUrl;
+        Assert.Equal(HttpStatusCode.Unauthorized, (await audience.GetAsync(privateUrl)).StatusCode);
+        Assert.Equal(Pixel, await admin.GetByteArrayAsync(privateUrl));
+        Assert.Equal(HttpStatusCode.BadRequest, (await admin.PostAsJsonAsync("/api/admin/discussion", new DiscussionInput(question.Id, false))).StatusCode);
+        (await admin.DeleteAsync(path)).EnsureSuccessStatusCode();
+        Assert.Null((await admin.GetFromJsonAsync<BoardView>("/api/admin/board"))!.Panellists.Single(p => p.Id == person.Id).PhotoUrl);
+        Assert.Equal(HttpStatusCode.NotFound, (await admin.GetAsync(privateUrl)).StatusCode);
+    }
+
+    [Fact]
+    public async Task Per_question_speaker_order_persists_and_selection_clears_the_timer_without_starting_it()
+    {
+        await using var site = new Site();
+        using var admin = await site.Client("Fireside.Admin");
+        using var audience = await site.Client();
+        using var voter = await site.Client("Attendee");
+        await Token(admin);
+        var board = await Revision(admin);
+        var question = board.Questions.Single(q => q.Visible);
+        var first = board.Panellists.Single(p => p.Visible);
+        var hidden = board.Panellists.Single(p => !p.Visible);
+        (await admin.PostAsJsonAsync("/api/admin/panellists",
+            new PanellistInput("Another speaker", "", "", true, 1))).EnsureSuccessStatusCode();
+        board = await Revision(admin);
+        var second = board.Panellists.Single(p => p.Name == "Another speaker");
+        var order = new[] { second.Id, hidden.Id, first.Id };
+        var input = new QuestionInput(question.Text, question.Category, true, false, 0, first.Id, order);
+        Assert.Equal(HttpStatusCode.BadRequest, (await admin.PutAsJsonAsync($"/api/admin/questions/{question.Id}",
+            input with { SpeakerIds = [first.Id, first.Id, second.Id] })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await admin.PutAsJsonAsync($"/api/admin/questions/{question.Id}",
+            input with { SpeakerIds = [Guid.NewGuid(), second.Id, first.Id] })).StatusCode);
+        (await admin.PutAsJsonAsync($"/api/admin/questions/{question.Id}", input)).EnsureSuccessStatusCode();
+        board = await Revision(admin);
+        Assert.Equal(order, board.Questions.Single(q => q.Id == question.Id).SpeakerIds);
+        Assert.Equal(board.Panellists.Select(p => p.Id), board.Questions.Single(q => q.Id != question.Id).SpeakerIds);
+        var publicBoard = (await audience.GetFromJsonAsync<BoardView>("/api/board"))!;
+        Assert.Equal(new[] { second.Id, first.Id }, publicBoard.Questions[0].SpeakerIds);
+        using (var scope = site.Services.CreateScope())
+        {
+            var stored = await scope.ServiceProvider.GetRequiredService<FiresideDb>().QuestionSpeakerOrders
+                .Where(s => s.QuestionId == question.Id).OrderBy(s => s.SortOrder).Select(s => s.PanellistId).ToArrayAsync();
+            Assert.Equal(order, stored);
+        }
+        var path = $"/api/admin/questions/{question.Id}/speaker";
+        Assert.Equal(HttpStatusCode.Unauthorized, (await audience.PutAsJsonAsync(path, new SpeakerInput(second.Id))).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await voter.PutAsJsonAsync(path, new SpeakerInput(second.Id))).StatusCode);
+        using var noCsrf = await site.Client("Fireside.Admin");
+        Assert.Equal(HttpStatusCode.BadRequest, (await noCsrf.PutAsJsonAsync(path, new SpeakerInput(second.Id))).StatusCode);
+        (await admin.PostAsJsonAsync("/api/admin/discussion", new DiscussionInput(question.Id, true))).EnsureSuccessStatusCode();
+        Assert.Equal(HttpStatusCode.Conflict, (await admin.PutAsJsonAsync(path, new SpeakerInput(second.Id))).StatusCode);
+        await Revision(admin);
+        Assert.Equal(HttpStatusCode.BadRequest, (await admin.PutAsJsonAsync(path, new SpeakerInput(hidden.Id))).StatusCode);
+        (await admin.PutAsJsonAsync(path, new SpeakerInput(second.Id))).EnsureSuccessStatusCode();
+        var selected = (await audience.GetFromJsonAsync<BoardView>("/api/board"))!;
+        Assert.Equal(question.Id, selected.CurrentQuestionId);
+        Assert.Equal(second.Id, selected.Questions[0].SpeakerId);
+        Assert.Null(selected.TimerStartedAt);
+        Assert.Null(selected.TimerDurationSeconds);
+        Assert.False(selected.GroupDiscussion);
+        await Revision(admin);
+        (await admin.PostAsJsonAsync("/api/admin/discussion", new DiscussionInput(question.Id, false))).EnsureSuccessStatusCode();
+        await Revision(admin);
+        (await admin.PutAsJsonAsync(path, new SpeakerInput(first.Id))).EnsureSuccessStatusCode();
+        Assert.Null((await audience.GetFromJsonAsync<BoardView>("/api/board"))!.TimerStartedAt);
+        await Revision(admin);
+        (await admin.DeleteAsync($"/api/admin/panellists/{second.Id}")).EnsureSuccessStatusCode();
+        Assert.DoesNotContain(second.Id, (await audience.GetFromJsonAsync<BoardView>("/api/board"))!.Questions[0].SpeakerIds);
+    }
+
+    private static async Task<BoardView> Revision(HttpClient client)
+    {
+        var board = (await client.GetFromJsonAsync<BoardView>("/api/admin/board"))!;
+        client.DefaultRequestHeaders.Remove("If-Match");
+        client.DefaultRequestHeaders.TryAddWithoutValidation("If-Match", $"\"{board.Revision}\"");
+        return board;
+    }
+
+    [Fact]
     public async Task Image_uploads_reject_oversized_or_non_raster_content()
     {
         await using var site = new Site();
@@ -356,7 +538,7 @@ public sealed class BoardTests
         admin.DefaultRequestHeaders.TryAddWithoutValidation("If-Match", "\"0\"");
         Assert.Equal(HttpStatusCode.BadRequest, (await Upload(admin, "<svg onload='alert(1)'/>"u8.ToArray())).StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, (await Upload(admin, [])).StatusCode);
-        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, (await Upload(admin, new byte[LandingImages.MaximumBytes + 1])).StatusCode);
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, (await Upload(admin, new byte[ImageUploads.MaximumBytes + 1])).StatusCode);
         var enormous = (byte[])Pixel.Clone();
         enormous[16] = 127;
         Assert.Equal(HttpStatusCode.BadRequest, (await Upload(admin, enormous)).StatusCode);
@@ -384,6 +566,7 @@ public sealed class BoardTests
 
 public sealed class Site : WebApplicationFactory<Program>
 {
+    public TestClock Clock { get; } = new();
     private readonly string directory = Path.Combine(Path.GetTempPath(), $"fireside-tests-{Guid.NewGuid():N}");
     private bool initialized;
 
@@ -397,6 +580,7 @@ public sealed class Site : WebApplicationFactory<Program>
         builder.UseSetting("AzureAd:TenantId", EntraIdentity.DemoTenant);
         builder.ConfigureServices(services =>
         {
+            services.AddSingleton<TimeProvider>(Clock);
             services.AddAuthentication(options =>
             {
                 options.DefaultAuthenticateScheme = "Test";
@@ -431,6 +615,12 @@ public sealed class Site : WebApplicationFactory<Program>
         await base.DisposeAsync();
         if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
     }
+}
+
+public sealed class TestClock : TimeProvider
+{
+    public DateTimeOffset Now { get; set; } = DateTimeOffset.UtcNow;
+    public override DateTimeOffset GetUtcNow() => Now;
 }
 
 public sealed class TestAuth(IOptionsMonitor<AuthenticationSchemeOptions> options, ILoggerFactory logger, UrlEncoder encoder)

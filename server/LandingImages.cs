@@ -4,10 +4,13 @@ namespace Fireside;
 
 public static class LandingImages
 {
-    public const int MaximumBytes = 2 * 1024 * 1024;
     public const string DefaultUrl = "/branding/christmas-fireside.png";
     public const string DefaultDescription = "Copilot Fireside Chat, 16 December at 16:00 GMT. Caroline Kallin, Claire Edgson, Mark Rackley and Jon Jarvis. Register at events.empowering.cloud.";
+}
 
+public static class ImageUploads
+{
+    public const int MaximumBytes = 2 * 1024 * 1024;
     public static string? ContentType(ReadOnlySpan<byte> data)
     {
         if (data.Length >= 45 && data[..8].SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }) &&

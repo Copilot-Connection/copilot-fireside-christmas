@@ -1,12 +1,13 @@
-import { fireEvent, render, screen, cleanup } from '@testing-library/react';
+import { act, fireEvent, render, screen, cleanup } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CurrentActivity, QuestionCard } from './App';
 import type { Question } from './types';
+import { DiscussionTimer } from './DiscussionTimer';
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.useRealTimers(); });
 const question: Question = {
   id: '1', text: 'What should we build?', category: 'Looking ahead', visible: true,
-  answered: false, sortOrder: 0, score: 4, myScore: -1,
+  answered: false, sortOrder: 0, score: 4, myScore: -1, speakerId: null, speakerIds: [],
 };
 const artwork = { imageUrl: '/branding/christmas-fireside.png', imageDescription: 'Event poster' };
 
@@ -58,6 +59,22 @@ describe('Read-only question totals', () => {
 });
 
 describe('Current activity', () => {
+  it('suppresses reactions throughout a group discussion even when global voting is open', () => {
+    render(<CurrentActivity {...artwork} question={question} groupDiscussion votingOpen canVote pending={false} onReact={vi.fn()} />);
+    expect(screen.getByText('Group discussion')).toBeVisible();
+    expect(screen.getByText('All panellists can join in. Voting is off during this discussion.')).toBeVisible();
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+  });
+
+  it('shows the assigned speaker portrait and an explicit image failure state', () => {
+    render(<CurrentActivity {...artwork} question={question} votingOpen canVote pending={false} onReact={vi.fn()}
+      speaker={{ id: 'speaker', name: 'Sample speaker', role: 'Sample only', bio: '', visible: true, sortOrder: 0, photoUrl: '/api/panellists/speaker/photo?v=1' }} />);
+    const portrait = screen.getByRole('img', { name: 'Portrait of Sample speaker' });
+    expect(portrait).toHaveAttribute('src', '/api/panellists/speaker/photo?v=1');
+    fireEvent.error(portrait);
+    expect(screen.getByText('Photo could not load')).toBeVisible();
+  });
+
   it('lets public viewers read the discussion without enabling reactions', () => {
     render(<CurrentActivity {...artwork} question={question} votingOpen canVote={false} pending={false} onReact={vi.fn()}>
       <a href="/auth/login">Sign in to vote</a>
@@ -66,6 +83,18 @@ describe('Current activity', () => {
     expect(screen.getByText('Discussing now')).toBeVisible();
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Sign in to vote' })).toHaveAttribute('href', '/auth/login');
+  });
+
+  it('counts down from the shared server clock despite local clock skew and never goes negative', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2030-01-01T00:00:00Z'));
+    render(<DiscussionTimer state={{ serverTime: '2026-12-16T16:00:00Z', timerStartedAt: '2026-12-16T16:00:00Z', timerDurationSeconds: 5 }} />);
+    expect(screen.getByRole('timer')).toHaveTextContent('00:05');
+    act(() => vi.advanceTimersByTime(3000));
+    expect(screen.getByRole('timer')).toHaveTextContent('00:02');
+    act(() => vi.advanceTimersByTime(4000));
+    expect(screen.getByRole('timer')).toHaveTextContent('00:00');
+    expect(screen.getByText("Time's up")).toBeVisible();
   });
 
   it('allows the same reaction again instead of permanently disabling a voted question', () => {

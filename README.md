@@ -37,6 +37,30 @@ workflows have been created.** Scaffolding and provisioning require separate app
   questions; select the current discussion; mark questions answered; pause voting;
   edit the event title and subtitle; manage the landing artwork. New questions and
   panellists are hidden by default.
+- Hosts can upload a PNG/JPEG photo for each panellist and assign a speaker to each
+  question. The Live view shows the selected published speaker and portrait,
+  including on mobile. Hidden photos stay behind the admin API; deleting a
+  panellist unassigns their questions without deleting those questions or votes.
+- Each question has a **Select speaker** control and previous/next arrows. They
+  cycle through published speakers, wrapping at either end. Selection updates the
+  audience immediately and clears the previous clock; it **does not start a timer**.
+  Use **Start speaker timer** when ready. Edit a question and use the up/down arrows
+  under **Speaker order for this question** to save its own order. New panellists
+  append to existing orders; hidden panellists are skipped, not exposed publicly.
+- Shared timer lengths default to 120 seconds for speakers and 300 for group
+  discussions, configurable from 5 to 3600 seconds. **Start speaker timer** selects
+  that question and starts/restarts its assigned speaker's timer. **Start group
+  discussion** selects it in an open-floor panel mode with its separate timer.
+  This is a timed spoken discussion, **not an in-app text chat**.
+- Timer start time and captured duration are stored on the server and pushed live.
+  Reconnects recover the same deadline; local clock skew is compensated using server
+  time. Editing central lengths affects subsequent starts only. Zero displays
+  “Time's up” without advancing the question or changing mode. **Stop timer**
+  clears the clock, not the discussion mode.
+- Group discussions have no voting controls and the voting API rejects actions
+  while group mode is active, even if the global voting switch is open or its
+  timer has stopped/expired. Start a speaker timer or leave the discussion to exit
+  group mode; the separate global pause remains respected.
 - Server-enforced host tenant plus admin role, CSRF protection, secure production cookies, same-origin
   APIs, validated input, rate-limited participation and revision-checked host edits.
 - SignalR invalidations after committed writes; clients refetch a filtered snapshot
@@ -103,13 +127,19 @@ Server integration tests exercise host-tenant/role restrictions, anonymous/forge
 participant identities, malformed/personal identity rejection, cross-tenant voting,
 CSRF enforcement, idempotent concurrent requests, repeated +1/-1/+3 actions, negative scores,
 per-identity rate limits, hidden content, revision conflicts, voting eligibility,
-image upload bounds/permissions/persistence, deletion cascades, live hub reactions,
+image upload bounds/permissions/persistence, hidden portrait protection, speaker
+assignment/deletion, authoritative timer recovery, group-mode voting rejection,
+deletion cascades, live hub reactions,
 and production demo rejection. React tests cover reaction eligibility and safe text
 rendering. Desktop and mobile Playwright scenarios use independent audience/host
 contexts to exercise public reading, explicit voter sign-in, moderation, voting,
 repeatable scoring, matching reactions in independent browsers, reduced motion,
 one-third-height animation end state, image upload/reset, keyboard tabs, viewport
-fit, voter denial at the host desk and reconnect recovery.
+fit, voter denial at the host desk, speaker photo uploads/selection, separate
+speaker/group clocks, direct group-mode vote rejection and reconnect recovery.
+Browser scenarios modify the demo event. Use a disposable local database rather
+than an event someone is using. Set `FIRESIDE_BASE_URL` to target an isolated
+instance (for example `http://127.0.0.1:5190`); the default remains port 5180.
 Browser tests add and clean up their own clearly named sample content; run them
 against a development event only.
 
@@ -249,9 +279,13 @@ schema upgrade system; do not rerun it as an upgrade mechanism.
 
 **Upgrading an existing database from the previous single-vote release:** stop
 writes and take a verified database backup. Run the scripts in `server/Schema`
-for your provider, **002-landing-image then 003-repeatable-reactions**, exactly
+for your provider, **002-landing-image, 003-repeatable-reactions, then
+004-speakers-timers, then 005-speaker-order**, exactly
 once, using an operator identity. They add the public artwork fields and convert
 each existing vote into a +1 ledger entry without changing question totals.
+If 002/003 were already applied (the repeatable-reaction release), run **004 then 005**;
+it adds portraits, nullable speaker assignments and shared timer state without
+changing existing content or scores. If 004 is already applied, run **005 only**.
 Do not run these scripts on a freshly initialized current schema. The SQLite
 upgrade has been exercised against the persistent demo database with row-count,
 per-question total, integrity and foreign-key checks. The SQL Server scripts
@@ -274,9 +308,10 @@ Operational notes:
   20 actions per 10 seconds per validated Entra identity per instance, with no
   queue. A 429 response is shown to the voter; cross-instance quotas require a
   separate design.
-- Uploaded landing artwork is public and stored durably in the same SQL database,
+- Uploaded landing artwork and published panellist photos are public and stored durably in the same SQL database,
   not the App Service filesystem. Hosts can upload PNG/JPEG files up to 2 MiB,
-  8192 pixels per side and 24 megapixels, with a description up to 300 characters.
+  8192 pixels per side and 24 megapixels. Landing artwork also requires a description
+  up to 300 characters; portrait descriptions use the panellist's name.
   The server checks signatures/header dimensions, not a full image decode, and
   does not strip metadata: remove private metadata before upload. SVGs are not
   accepted. Include image data in database backups and storage estimates.

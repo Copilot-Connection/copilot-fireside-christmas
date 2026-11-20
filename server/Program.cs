@@ -47,6 +47,7 @@ builder.Services.AddDataProtection().SetApplicationName("CopilotFiresideChristma
     .PersistKeysToFileSystem(new DirectoryInfo(keyPath));
 builder.Services.AddSingleton<ParticipantIdentity>();
 builder.Services.AddSingleton<LiveUpdates>();
+builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddAntiforgery(options =>
 {
     options.HeaderName = "X-CSRF-TOKEN";

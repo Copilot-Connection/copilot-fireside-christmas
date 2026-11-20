@@ -30,8 +30,10 @@ public static class Api
 {
     public static void MapFiresideApi(this WebApplication app)
     {
-        app.MapGet("/api/board", async (FiresideDb db, HttpContext context) =>
-            Results.Ok(await Snapshot(db, false, context.RequestAborted, EntraIdentity.VoterKey(context.User))));
+        app.MapGet("/api/board", async (FiresideDb db, HttpContext context, TimeProvider clock) =>
+            Results.Ok(await Snapshot(db, false, context.RequestAborted, clock, EntraIdentity.VoterKey(context.User))));
+        app.MapGet("/api/panellists/{id:guid}/photo", async (Guid id, FiresideDb db, CancellationToken token) =>
+            await Photo(db, id, false, token));
         app.MapGet("/api/landing-image", async (FiresideDb db, CancellationToken token) =>
         {
             var image = await db.Boards.AsNoTracking().Select(b => new { b.LandingImageData, b.LandingImageContentType })
@@ -43,34 +45,86 @@ public static class Api
             .RequireAuthorization("Voter").RequireRateLimiting("voting");
 
         var admin = app.MapGroup("/api/admin").RequireAuthorization("Admin");
-        admin.MapGet("/board", async (FiresideDb db, CancellationToken token) =>
-            Results.Ok(await Snapshot(db, true, token)));
+        admin.MapGet("/board", async (FiresideDb db, TimeProvider clock, CancellationToken token) =>
+            Results.Ok(await Snapshot(db, true, token, clock)));
+        admin.MapGet("/panellists/{id:guid}/photo", async (Guid id, FiresideDb db, CancellationToken token) =>
+            await Photo(db, id, true, token));
+        admin.MapPut("/panellists/{id:guid}/photo", async (Guid id, HttpContext context, FiresideDb db, LiveUpdates live) =>
+            await Upload(context, (data, type) => Mutate(context, db, live, async board =>
+            {
+                var person = await db.Panellists.FindAsync([id], context.RequestAborted);
+                if (person is null) return Results.NotFound();
+                person.PhotoData = data;
+                person.PhotoContentType = type;
+                person.PhotoRevision = board.Revision + 1;
+                return null;
+            })));
+        admin.MapDelete("/panellists/{id:guid}/photo", async (Guid id, HttpContext context, FiresideDb db, LiveUpdates live) =>
+            await Mutate(context, db, live, async _ =>
+            {
+                var person = await db.Panellists.FindAsync([id], context.RequestAborted);
+                if (person is null) return Results.NotFound();
+                person.PhotoData = null;
+                person.PhotoContentType = null;
+                person.PhotoRevision = null;
+                return null;
+            }));
+        admin.MapPut("/timing", async (TimingInput input, HttpContext context, FiresideDb db, LiveUpdates live) =>
+            await Mutate(context, db, live, board =>
+            {
+                if (input.SpeakerSeconds is < 5 or > 3600 || input.GroupSeconds is < 5 or > 3600)
+                    return Task.FromResult<IResult?>(Invalid("Set each timer between 5 and 3600 seconds."));
+                board.SpeakerSeconds = input.SpeakerSeconds;
+                board.GroupSeconds = input.GroupSeconds;
+                return Task.FromResult<IResult?>(null);
+            }));
+        admin.MapPost("/discussion", async (DiscussionInput input, HttpContext context, FiresideDb db, LiveUpdates live, TimeProvider clock) =>
+            await Mutate(context, db, live, async board =>
+            {
+                var question = await db.Questions.AsNoTracking().Where(q => q.Id == input.QuestionId && q.Visible && !q.Answered)
+                    .Select(q => new { SpeakerAvailable = q.Speaker != null && q.Speaker.Visible }).SingleOrDefaultAsync(context.RequestAborted);
+                if (question is null) return Invalid("Select a published, unanswered question.");
+                if (!input.GroupDiscussion && !question.SpeakerAvailable)
+                    return Invalid("Assign a published panellist before starting their timer.");
+                board.CurrentQuestionId = input.QuestionId;
+                board.GroupDiscussion = input.GroupDiscussion;
+                board.TimerStartedAt = clock.GetUtcNow();
+                board.TimerDurationSeconds = input.GroupDiscussion ? board.GroupSeconds : board.SpeakerSeconds;
+                return null;
+            }));
+        admin.MapDelete("/discussion/timer", async (HttpContext context, FiresideDb db, LiveUpdates live) =>
+            await Mutate(context, db, live, board =>
+            {
+                ResetTimer(board);
+                return Task.FromResult<IResult?>(null);
+            }));
+        admin.MapPut("/questions/{id:guid}/speaker", async (Guid id, SpeakerInput input, HttpContext context, FiresideDb db, LiveUpdates live) =>
+            await Mutate(context, db, live, async board =>
+            {
+                var question = await db.Questions.FindAsync([id], context.RequestAborted);
+                if (question is null) return Results.NotFound();
+                if (!question.Visible || question.Answered) return Invalid("Select a published, unanswered question.");
+                if (!await db.Panellists.AnyAsync(p => p.Id == input.SpeakerId && p.Visible, context.RequestAborted))
+                    return Invalid("Choose a published panellist.");
+                if (board.CurrentQuestionId != id || question.SpeakerId != input.SpeakerId || board.GroupDiscussion)
+                    ResetTimer(board);
+                question.SpeakerId = input.SpeakerId;
+                board.CurrentQuestionId = id;
+                board.GroupDiscussion = false;
+                return null;
+            }));
         admin.MapPut("/landing-image", async (string? description, HttpContext context, FiresideDb db, LiveUpdates live) =>
         {
             if (!InputRules.Text(description?.Trim(), 1, 300))
                 return Invalid("Describe the image for people using screen readers (1-300 characters).");
-            if (context.Request.ContentLength > LandingImages.MaximumBytes)
-                return Results.Problem("Choose a PNG or JPEG image no larger than 2 MB.", statusCode: 413);
-            using var stream = new MemoryStream();
-            var buffer = new byte[8192];
-            int count;
-            while ((count = await context.Request.Body.ReadAsync(buffer, context.RequestAborted)) > 0)
-            {
-                if (stream.Length + count > LandingImages.MaximumBytes)
-                    return Results.Problem("Choose a PNG or JPEG image no larger than 2 MB.", statusCode: 413);
-                await stream.WriteAsync(buffer.AsMemory(0, count), context.RequestAborted);
-            }
-            var data = stream.ToArray();
-            var type = LandingImages.ContentType(data);
-            if (type is null) return Invalid("Choose a PNG or JPEG image, up to 8192 pixels per side and 24 megapixels. SVG and other file types are not accepted.");
-            return await Mutate(context, db, live, board =>
+            return await Upload(context, (data, type) => Mutate(context, db, live, board =>
             {
                 board.LandingImageData = data;
                 board.LandingImageContentType = type;
                 board.LandingImageDescription = description!.Trim();
                 board.LandingImageRevision = board.Revision + 1;
                 return Task.FromResult<IResult?>(null);
-            });
+            }));
         });
         admin.MapDelete("/landing-image", async (HttpContext context, FiresideDb db, LiveUpdates live) =>
             await Mutate(context, db, live, board =>
@@ -93,6 +147,11 @@ public static class Api
                 board.Title = input.Title!.Trim();
                 board.Subtitle = input.Subtitle!.Trim();
                 board.VotingOpen = input.VotingOpen;
+                if (board.CurrentQuestionId != input.CurrentQuestionId)
+                {
+                    board.GroupDiscussion = false;
+                    ResetTimer(board);
+                }
                 board.CurrentQuestionId = input.CurrentQuestionId;
                 return null;
             }));
@@ -106,40 +165,58 @@ public static class Api
                 return Task.FromResult<IResult?>(null);
             }));
         admin.MapPut("/panellists/{id:guid}", async (Guid id, PanellistInput input, HttpContext context, FiresideDb db, LiveUpdates live) =>
-            await Mutate(context, db, live, async _ =>
+            await Mutate(context, db, live, async board =>
             {
                 if (!ValidPanellist(input)) return Invalid("Check the panellist's name, role and bio lengths.");
                 var person = await db.Panellists.FindAsync([id], context.RequestAborted);
                 if (person is null) return Results.NotFound();
                 Apply(person, input);
+                if (!person.Visible && !board.GroupDiscussion && await db.Questions.AnyAsync(
+                    q => q.Id == board.CurrentQuestionId && q.SpeakerId == id, context.RequestAborted))
+                    ResetTimer(board);
                 return null;
             }));
         admin.MapDelete("/panellists/{id:guid}", async (Guid id, HttpContext context, FiresideDb db, LiveUpdates live) =>
-            await Mutate(context, db, live, async _ =>
+            await Mutate(context, db, live, async board =>
             {
                 var person = await db.Panellists.FindAsync([id], context.RequestAborted);
                 if (person is null) return Results.NotFound();
+                if (!board.GroupDiscussion && await db.Questions.AnyAsync(
+                    q => q.Id == board.CurrentQuestionId && q.SpeakerId == id, context.RequestAborted))
+                    ResetTimer(board);
+                db.QuestionSpeakerOrders.RemoveRange(await db.QuestionSpeakerOrders
+                    .Where(s => s.PanellistId == id).ToListAsync(context.RequestAborted));
                 db.Panellists.Remove(person);
                 return null;
             }));
         admin.MapPost("/questions", async (QuestionInput input, HttpContext context, FiresideDb db, LiveUpdates live) =>
-            await Mutate(context, db, live, _ =>
+            await Mutate(context, db, live, async _ =>
             {
-                if (!ValidQuestion(input)) return Task.FromResult<IResult?>(Invalid("Enter a question (1-240 characters) and category (up to 60)."));
+                if (!ValidQuestion(input)) return Invalid("Enter a question (1-240 characters) and category (up to 60).");
+                if (!await SpeakerExists(db, input.SpeakerId, context.RequestAborted)) return Invalid("Choose an existing panellist.");
+                if (!await ValidSpeakerOrder(db, input.SpeakerIds, context.RequestAborted))
+                    return Invalid("Speaker order must include every panellist exactly once. Refresh and retry.");
                 var question = new Question();
                 Apply(question, input);
                 db.Questions.Add(question);
-                return Task.FromResult<IResult?>(null);
+                await SetSpeakerOrder(db, question.Id, input.SpeakerIds, context.RequestAborted);
+                return null;
             }));
         admin.MapPut("/questions/{id:guid}", async (Guid id, QuestionInput input, HttpContext context, FiresideDb db, LiveUpdates live) =>
             await Mutate(context, db, live, async board =>
             {
                 if (!ValidQuestion(input)) return Invalid("Enter a question (1-240 characters) and category (up to 60).");
+                if (!await SpeakerExists(db, input.SpeakerId, context.RequestAborted)) return Invalid("Choose an existing panellist.");
+                if (!await ValidSpeakerOrder(db, input.SpeakerIds, context.RequestAborted))
+                    return Invalid("Speaker order must include every panellist exactly once. Refresh and retry.");
                 var question = await db.Questions.FindAsync([id], context.RequestAborted);
                 if (question is null) return Results.NotFound();
+                if (board.CurrentQuestionId == id && question.SpeakerId != input.SpeakerId && !board.GroupDiscussion)
+                    ResetTimer(board);
                 Apply(question, input);
+                await SetSpeakerOrder(db, id, input.SpeakerIds, context.RequestAborted);
                 if (board.CurrentQuestionId == id && (!question.Visible || question.Answered))
-                    board.CurrentQuestionId = null;
+                    ClearDiscussion(board);
                 return null;
             }));
         admin.MapDelete("/questions/{id:guid}", async (Guid id, HttpContext context, FiresideDb db, LiveUpdates live) =>
@@ -147,36 +224,51 @@ public static class Api
             {
                 var question = await db.Questions.FindAsync([id], context.RequestAborted);
                 if (question is null) return Results.NotFound();
-                if (board.CurrentQuestionId == id) board.CurrentQuestionId = null;
+                if (board.CurrentQuestionId == id) ClearDiscussion(board);
                 db.Questions.Remove(question);
                 return null;
             }));
     }
 
-    public static async Task<BoardView> Snapshot(FiresideDb db, bool admin, CancellationToken token, Guid? voter = null)
+    public static async Task<BoardView> Snapshot(FiresideDb db, bool admin, CancellationToken token, TimeProvider clock, Guid? voter = null)
     {
         // A consistent snapshot prevents half-applied host changes appearing in the audience UI.
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
         var board = await db.Boards.AsNoTracking().Select(b => new
         {
             b.Title, b.Subtitle, b.VotingOpen, b.CurrentQuestionId, b.Revision,
-            b.LandingImageRevision, b.LandingImageDescription
+            b.LandingImageRevision, b.LandingImageDescription, b.SpeakerSeconds, b.GroupSeconds,
+            b.GroupDiscussion, b.TimerStartedAt, b.TimerDurationSeconds
         }).SingleAsync(token);
         var panellists = await db.Panellists.AsNoTracking().Where(p => admin || p.Visible)
-            .OrderBy(p => p.SortOrder).ThenBy(p => p.Name).ToListAsync(token);
+            .OrderBy(p => p.SortOrder).ThenBy(p => p.Name)
+            .Select(p => new PanellistView(p.Id, p.Name, p.Role, p.Bio, p.Visible, p.SortOrder,
+                p.PhotoRevision == null ? null : (admin ? "/api/admin" : "/api") + "/panellists/" + p.Id + "/photo?v=" + p.PhotoRevision))
+            .ToListAsync(token);
         var questions = await db.Questions.AsNoTracking().Where(q => admin || q.Visible)
             .OrderBy(q => q.SortOrder).ThenBy(q => q.Id)
             .Select(q => new QuestionView(q.Id, q.Text, q.Category, q.Visible, q.Answered, q.SortOrder,
                 db.Votes.Where(v => v.QuestionId == q.Id).Sum(v => (long?)v.Delta) ?? 0,
                 voter == null ? null : db.Votes.Where(v => v.QuestionId == q.Id && v.ParticipantId == voter)
-                    .Sum(v => (long?)v.Delta) ?? 0))
+                    .Sum(v => (long?)v.Delta) ?? 0,
+                admin || q.Speaker != null && q.Speaker.Visible ? q.SpeakerId : null))
             .ToListAsync(token);
+        var orders = await db.QuestionSpeakerOrders.AsNoTracking().Where(s => admin || s.Question.Visible)
+            .OrderBy(s => s.SortOrder).ThenBy(s => s.PanellistId).ToListAsync(token);
+        var visiblePeople = panellists.Select(p => p.Id).ToHashSet();
+        questions = questions.Select(q => q with
+        {
+            SpeakerIds = orders.Where(s => s.QuestionId == q.Id && visiblePeople.Contains(s.PanellistId))
+                .Select(s => s.PanellistId).Concat(panellists.Select(p => p.Id)).Distinct().ToArray()
+        }).ToList();
         await transaction.CommitAsync(token);
         return new(board.Title, board.Subtitle, board.VotingOpen,
             questions.Any(q => q.Id == board.CurrentQuestionId) ? board.CurrentQuestionId : null,
             board.Revision, panellists, questions,
             board.LandingImageRevision is { } version ? $"/api/landing-image?v={version}" : LandingImages.DefaultUrl,
-            board.LandingImageDescription, board.LandingImageRevision is not null);
+            board.LandingImageDescription, board.LandingImageRevision is not null,
+            board.SpeakerSeconds, board.GroupSeconds, board.GroupDiscussion,
+            board.TimerStartedAt, board.TimerDurationSeconds, clock.GetUtcNow());
     }
 
     private static async Task<IResult> Vote(Guid id, ReactionInput input, HttpContext context, FiresideDb db,
@@ -195,7 +287,7 @@ public static class Api
             var existing = await db.Votes.AsNoTracking().SingleOrDefaultAsync(v => v.Id == input.RequestId, token);
             if (existing is not null) return SameReaction(existing, id, voter.Value, delta)
                 ? Results.NoContent() : Conflict();
-            var votingOpen = await db.Boards.AsNoTracking().Select(b => b.VotingOpen).SingleAsync(token);
+            var votingOpen = await db.Boards.AsNoTracking().Select(b => b.VotingOpen && !b.GroupDiscussion).SingleAsync(token);
             var eligible = votingOpen && await db.Questions
                 .AnyAsync(q => q.Id == id && q.Visible && !q.Answered, token);
             if (!eligible) return Results.Problem("Voting is closed for this question.", statusCode: 409);
@@ -214,6 +306,73 @@ public static class Api
         }
         await live.Notify(new LiveReaction(input.RequestId, id, input.Kind));
         return Results.NoContent();
+    }
+
+    private static async Task<IResult> Photo(FiresideDb db, Guid id, bool admin, CancellationToken token)
+    {
+        var image = await db.Panellists.AsNoTracking().Where(p => p.Id == id && (admin || p.Visible))
+            .Select(p => new { p.PhotoData, p.PhotoContentType }).SingleOrDefaultAsync(token);
+        if (image?.PhotoData is not { } data || image.PhotoContentType is not { } type) return Results.NotFound();
+        return Results.Bytes(data, type);
+    }
+
+    private static async Task<IResult> Upload(HttpContext context, Func<byte[], string, Task<IResult>> save)
+    {
+        if (context.Request.ContentLength > ImageUploads.MaximumBytes)
+            return Results.Problem("Choose a PNG or JPEG image no larger than 2 MB.", statusCode: 413);
+        using var stream = new MemoryStream();
+        var buffer = new byte[8192];
+        int count;
+        while ((count = await context.Request.Body.ReadAsync(buffer, context.RequestAborted)) > 0)
+        {
+            if (stream.Length + count > ImageUploads.MaximumBytes)
+                return Results.Problem("Choose a PNG or JPEG image no larger than 2 MB.", statusCode: 413);
+            await stream.WriteAsync(buffer.AsMemory(0, count), context.RequestAborted);
+        }
+        var data = stream.ToArray();
+        var type = ImageUploads.ContentType(data);
+        if (type is null) return Invalid("Choose a PNG or JPEG image, up to 8192 pixels per side and 24 megapixels. SVG and other file types are not accepted.");
+        return await save(data, type);
+    }
+
+    private static Task<bool> SpeakerExists(FiresideDb db, Guid? id, CancellationToken token) =>
+        id is { } speaker ? db.Panellists.AnyAsync(p => p.Id == speaker, token) : Task.FromResult(true);
+
+    private static async Task<bool> ValidSpeakerOrder(FiresideDb db, IReadOnlyList<Guid>? ids, CancellationToken token)
+    {
+        if (ids is null) return true;
+        if (ids.Distinct().Count() != ids.Count) return false;
+        var people = await db.Panellists.Select(p => p.Id).ToListAsync(token);
+        return ids.Count == people.Count && ids.ToHashSet().SetEquals(people);
+    }
+
+    private static async Task SetSpeakerOrder(FiresideDb db, Guid question, IReadOnlyList<Guid>? ids, CancellationToken token)
+    {
+        if (ids is null) return;
+        var existing = await db.QuestionSpeakerOrders.Where(s => s.QuestionId == question).ToListAsync(token);
+        for (var index = 0; index < ids.Count; index++)
+        {
+            var row = existing.SingleOrDefault(s => s.PanellistId == ids[index]);
+            if (row is null)
+            {
+                row = new QuestionSpeakerOrder { QuestionId = question, PanellistId = ids[index] };
+                db.QuestionSpeakerOrders.Add(row);
+            }
+            row.SortOrder = index;
+        }
+    }
+
+    private static void ResetTimer(Board board)
+    {
+        board.TimerStartedAt = null;
+        board.TimerDurationSeconds = null;
+    }
+
+    private static void ClearDiscussion(Board board)
+    {
+        board.CurrentQuestionId = null;
+        board.GroupDiscussion = false;
+        ResetTimer(board);
     }
 
     private static bool SameReaction(Vote vote, Guid question, Guid voter, int delta) =>
@@ -265,5 +424,6 @@ public static class Api
         question.Visible = input.Visible;
         question.Answered = input.Answered;
         question.SortOrder = input.SortOrder;
+        question.SpeakerId = input.SpeakerId;
     }
 }

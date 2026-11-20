@@ -14,9 +14,10 @@ export function useBoard(admin: boolean, enabled: boolean) {
     const current = ++generation.current;
     try {
       const next = await request<Board>(admin ? '/api/admin/board' : '/api/board');
-      if (mounted.current && current === generation.current) {
-        setBoard(next);
-        setError('');
+      if (mounted.current) {
+        setBoard(previous => previous && (next.revision < previous.revision ||
+          (next.revision === previous.revision && current !== generation.current)) ? previous : next);
+        if (current === generation.current) setError('');
       }
     } catch (error) {
       if (mounted.current && current === generation.current) setError(errorMessage(error));
