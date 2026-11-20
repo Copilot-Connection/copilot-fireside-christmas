@@ -76,7 +76,7 @@ workflows have been created.** Scaffolding and provisioning require separate app
   time. Editing central lengths affects subsequent starts only. Zero displays
   “Time's up” without advancing the question or changing mode. **Stop timer**
   clears the clock, not the discussion mode.
-- Audience speaker and group clocks flash gently during their final 15% and show
+- Audience speaker and group clocks pulse and grow during their final 15% and show
   “Time running low”. Reduced-motion users get the same steady text/color warning
   without flashing. Host clocks remain steady; reaching zero stops the warning.
 - Group discussions have no voting controls and the voting API rejects actions

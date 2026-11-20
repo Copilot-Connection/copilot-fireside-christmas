@@ -37,10 +37,18 @@ test('audience speaker and group clocks warn at 15% with a steady reduced-motion
     await page.clock.fastForward(250);
     await expect(page.getByText('Time running low', { exact: true })).toBeVisible();
     await expect(timer).toHaveCSS('animation-name', 'timer-warning');
+    await expect(timer).toHaveCSS('animation-duration', '1.2s');
+    await timer.evaluate(element => {
+      const animation = element.getAnimations()[0];
+      animation.pause();
+      animation.currentTime = 600;
+    });
+    await expect(timer).toHaveCSS('transform', 'matrix(1.25, 0, 0, 1.25, 0, 0)');
     await page.locator('.current-question').screenshot({ path: testInfo.outputPath(`${mode}-timer-warning.png`),
       animations: 'allow' });
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await expect(timer).toHaveCSS('animation-name', 'none');
+    await expect(timer).toHaveCSS('transform', 'none');
     await expect(page.getByText('Time running low', { exact: true })).toBeVisible();
     await page.clock.fastForward(duration * 150);
     await expect(page.getByText("Time's up")).toBeVisible();
