@@ -11,6 +11,7 @@ resource account 'Microsoft.DocumentDB/databaseAccounts@2026-07-15' = {
   kind: 'GlobalDocumentDB'
   properties: {
     databaseAccountOfferType: 'Standard'
+    capacityMode: 'Serverless'
     disableLocalAuth: true
     enableAutomaticFailover: false
     consistencyPolicy: {
@@ -21,11 +22,6 @@ resource account 'Microsoft.DocumentDB/databaseAccounts@2026-07-15' = {
         locationName: location
         failoverPriority: 0
         isZoneRedundant: false
-      }
-    ]
-    capabilities: [
-      {
-        name: 'EnableServerless'
       }
     ]
   }
