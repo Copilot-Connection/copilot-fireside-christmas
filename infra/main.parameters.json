@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environmentName": { "value": "fireside-prod-5fa8" },
+    "location": { "value": "swedencentral" },
+    "sessionId": { "value": "00000000-0000-0000-0000-000000000000" },
+    "deployedBy": { "value": "__DEPLOYED_BY__" },
+    "createdAt": { "value": "__CREATED_AT_ISO8601__" },
+    "deployerObjectId": { "value": "__DEPLOYER_OBJECT_ID__" }
+  }
+}
