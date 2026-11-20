@@ -19,3 +19,14 @@ reference site is the Microsoft Copilot product mark, so it is not mislabelled o
 republished here as a Fireside Chat logo.
 No past guest photograph, name or event
 details from the reference site are represented as this event's confirmed panel.
+
+The audience's charcoal surface, gold accents, restrained network-line motif and
+uppercase display wordmark take their direction from the reference site.
+The line illustration is newly authored, not copied artwork.
+
+Krona One, the reference site's display typeface, is self-hosted at
+`../fonts/krona-one.ttf` so visitors do not contact a third-party font service.
+Source: https://fonts.google.com/specimen/Krona+One
+Font binary: https://fonts.gstatic.com/s/kronaone/v15/jAnEgHdjHcjgfIb1ZcUCMQ.ttf
+The SIL Open Font License is included at `../fonts/OFL.txt`, sourced from
+https://github.com/google/fonts/blob/main/ofl/kronaone/OFL.txt.

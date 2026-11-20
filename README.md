@@ -11,8 +11,10 @@ workflows have been created.** Scaffolding and provisioning require separate app
 
 ## What it does
 
-- Public audience page: panellists, published questions, current discussion, live
-  vote totals, favourites and answered questions.
+- Public audience page focused on the current discussion, with a direct vote
+  action. Questions, favourites, answered questions and panellist bios sit in
+  secondary expandable sections. If no discussion is selected, a waiting state
+  appears rather than choosing a question on the host's behalf.
 - Name-to-view participation with a protected HTTP-only display-name cookie.
   Names are not authentication and are not public. Viewing and SignalR remain
   anonymous; the voting API requires a validated organisational Entra identity.
@@ -255,8 +257,9 @@ Operational notes:
 The public [Copilot Connection reference](https://github.com/Copilot-Connection/CCWeb2)
 links to the [actual Copilot Fireside Chat site](https://copilotfireside.chat/).
 This app reuses its existing fireplace brand photograph with an explicit caption,
-not as a claim about confirmed Christmas panellists. The text branding and a new
-warm Christmas UI treatment are used; the simple flame icon is **not claimed to be
+not as a claim about confirmed Christmas panellists. The audience defaults to the
+reference site's charcoal-and-gold direction, with self-hosted Krona One display
+type and a newly drawn, restrained network motif. The simple flame icon is **not claimed to be
 an official logo**. No separate Fireside logo asset was identified (the small mark
 on the existing site is the Microsoft Copilot product logo). Asset provenance is
 recorded alongside the image in `client/public/branding/README.md`.

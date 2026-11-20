@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react';
-import { ArrowDown, ArrowRight, ArrowUp, Check, ChevronUp, Flame, Radio, ShieldCheck, Snowflake, Users } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, Check, ChevronDown, ChevronUp, Flame, MessagesSquare, Radio, ShieldCheck, Snowflake, Users } from 'lucide-react';
 import { request, write, errorMessage } from './api';
 import type { Question, Session } from './types';
 import { useBoard } from './useBoard';
@@ -16,15 +16,17 @@ export function App() {
     } catch (error) { setSessionError(errorMessage(error)); }
   }, []);
   useEffect(() => { void refreshSession(); }, [refreshSession]);
-  return <div className="site-shell">
+  return <div className={`site-shell ${adminPage ? '' : 'fireside-surface'}`}>
+    {!adminPage && <svg className="fireside-mesh" viewBox="0 0 1400 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+      <path d="M0 80 260 10 180 310 0 460M260 10 530 180 180 310 380 590 0 460M530 180 780 20 900 350 530 180 380 590 800 720 900 350 1250 120 1400 260M780 20 1250 120 1400 0M900 350 1220 620 1400 420M380 590 240 900M800 720 1220 620 1400 900M800 720 780 900" />
+    </svg>}
     <a className="skip-link" href="#main">Skip to content</a>
     <header className="site-header">
       <a className="brand" href="/" aria-label="Copilot Fireside Chat home">
-        <span className="brand-symbol"><Flame size={25} aria-hidden="true" /></span>
-        <span>copilot<span className="brand-sub">FIRESIDE CHAT</span></span>
+        <Flame className="brand-symbol" size={28} aria-hidden="true" />
+        <span>Copilot<span className="brand-sub">Fireside Chat</span></span>
       </a>
       <nav aria-label="Main navigation">
-        <a href="/" aria-current={!adminPage ? 'page' : undefined}>The fireside</a>
         <a href="/admin" aria-current={adminPage ? 'page' : undefined}><ShieldCheck size={16} aria-hidden="true" /> Host desk</a>
       </nav>
     </header>
@@ -41,8 +43,7 @@ export function App() {
             : <Welcome session={session} onJoin={refreshSession} />}
     </main>
     <footer className="site-footer">
-      <a className="footer-title" href="https://copilotfireside.chat/" target="_blank" rel="noreferrer">Copilot Fireside Chat <ArrowUp size={14} aria-hidden="true" /></a>
-      <span>Good company. Curious minds. A warmer kind of conversation.</span>
+      <a className="footer-title" href="https://copilotfireside.chat/" target="_blank" rel="noreferrer">Visit Copilot Fireside Chat <ArrowUpRight size={14} aria-hidden="true" /></a>
       <a href="/privacy">Privacy &amp; participation</a>
     </footer>
   </div>;
@@ -90,21 +91,14 @@ function NameForm({ session, onSaved, initial = '' }: { session: Session; onSave
 function Welcome({ session, onJoin }: { session: Session; onJoin: () => Promise<void> }) {
   return <section className="welcome">
     <div className="welcome-copy">
-      <p className="eyebrow"><Snowflake size={16} aria-hidden="true" /> THE CHRISTMAS EDITION</p>
-      <h1>A little warmth.<br />A lot of <em>possibilities.</em></h1>
-      <p className="intro">Welcome to the Copilot Fireside Chat. Settle in, meet the panel,
-        and help shape the conversation - one good question at a time.</p>
-      <div className="welcome-steps">
-        <span><Users size={18} aria-hidden="true" /> Meet the panel</span>
-        <span><ChevronUp size={20} aria-hidden="true" /> Vote for your favourites</span>
-        <span><Radio size={18} aria-hidden="true" /> Follow along live</span>
-      </div>
+      <h1>Come in.<br />Join the fireside.</h1>
+      <p className="intro">The Christmas panel, one conversation at a time.
+        Set your name to follow what is happening now.</p>
       <NameForm session={session} onSaved={onJoin} />
     </div>
     <figure className="welcome-photo">
       <img src="/branding/fireside-scene.jpg" alt="The existing Copilot Fireside Chat brand photograph, featuring a welcoming fireplace" />
       <figcaption>From the Copilot Fireside Chat community.<br />Brand photograph - not this event's confirmed panel.</figcaption>
-      <span className="photo-stamp" aria-hidden="true"><Flame size={20} /> A seat by the fire</span>
     </figure>
   </section>;
 }
@@ -137,8 +131,9 @@ function Audience({ session, refreshSession }: { session: Session; refreshSessio
   if (!board) return error ? <div className="center-state"><ErrorNotice message={error} />
     <button onClick={() => void refresh()}>Try again</button></div> : <Loading />;
   const current = board.questions.find(q => q.id === board.currentQuestionId);
-  const questions = board.questions.filter(q => filter === 'answered' ? q.answered :
-    !q.answered && (filter === 'all' || q.hasVoted)).sort((a, b) => b.votes - a.votes || a.sortOrder - b.sortOrder);
+  const upNextCount = board.questions.filter(q => !q.answered && q.id !== current?.id).length;
+  const questions = board.questions.filter(q => q.id !== current?.id && (filter === 'answered' ? q.answered :
+    !q.answered && (filter === 'all' || q.hasVoted))).sort((a, b) => b.votes - a.votes || a.sortOrder - b.sortOrder);
   return <>
     <div className="audience-bar">
       <span className={`connection ${connection === 'Live' ? 'connected' : ''}`} role="status">
@@ -152,74 +147,87 @@ function Audience({ session, refreshSession }: { session: Session; refreshSessio
     </div>
     {editName && <div className="name-edit"><NameForm session={session} initial={session.participantName ?? ''}
       onSaved={async () => { await refreshSession(); setEditName(false); }} /></div>}
-    <section className="event-hero">
-      <div>
-        <p className="eyebrow"><Snowflake size={16} aria-hidden="true" /> THE CHRISTMAS EDITION</p>
-        <h1>{board.title}<span>Pull up a chair.</span></h1>
-        <p>{board.subtitle}</p>
-      </div>
-      <div className="fireside-note"><Flame size={32} strokeWidth={1.5} aria-hidden="true" />
-        <p>A good conversation starts<br />with a little curiosity.</p><span>MAKE YOUR VOICE HEARD</span></div>
-    </section>
+    <header className="event-heading"><h1>{board.title}</h1><p>{board.subtitle}</p></header>
     {error && <ErrorNotice message={`${error} The board may be out of date.`} />}
     {new URLSearchParams(location.search).has('authError') && <ErrorNotice message="Microsoft sign-in did not complete. Try again with a work or school account, or contact your organisation's administrator." />}
-    <div className="audience-grid">
-      <section className="questions-section" aria-labelledby="questions-title">
-        {current && <article className="current-question">
-          <div className="eyebrow"><Radio size={16} aria-hidden="true" /> AROUND THE FIRE RIGHT NOW</div>
-          <h2>{current.text}</h2>
-          <div className="current-meta"><span>{current.category || 'The conversation'}</span><span>{current.votes} votes from the room</span></div>
-        </article>}
-        <div className="section-heading">
-          <div><p className="eyebrow">YOUR CURIOSITY, OUR CONVERSATION</p><h2 id="questions-title">What should we talk about?</h2></div>
-          <span className={`pill ${board.votingOpen ? 'pill-live' : ''}`}>{board.votingOpen ? 'Voting open' : 'Voting paused'}</span>
-        </div>
-        <p className="section-description">Give the questions you love a little lift. The host chooses what comes next.</p>
-        {!session.canVote && <div className="voter-signin">
-          <ShieldCheck size={22} aria-hidden="true" /><div><strong>Here to listen? You're all set.</strong>
-            <p>To upvote, sign in with a work or school Microsoft Entra account from any organisation.</p>
-            {session.demo ? <><span className="fine-print">Local demo only: this simulates a signed-in audience account.</span>
-              <button disabled={pending !== null} onClick={() => void demoVoter()}>Sign in as demo voter</button></>
-              : <a className="button button-primary" href="/auth/login">Sign in with Microsoft to vote</a>}</div>
-        </div>}
+    <CurrentActivity question={current} votingOpen={board.votingOpen} canVote={session.canVote}
+      pending={pending !== null} onVote={() => { if (current) void vote(current.id); }}>
+      {!session.canVote && <div className="activity-signin">
+        {session.demo ? <button className="button-primary" disabled={pending !== null} onClick={() => void demoVoter()}>
+          Sign in as demo voter <ArrowRight size={17} aria-hidden="true" /></button>
+          : <a className="button button-primary" href="/auth/login">Sign in with Microsoft to vote <ArrowRight size={17} aria-hidden="true" /></a>}
+        <p>{session.demo ? 'Development-only sign-in simulation.' : 'Work or school accounts from any organisation. Viewing is public.'}</p>
+      </div>}
+    </CurrentActivity>
+    {voteError && <ErrorNotice message={voteError} />}
+    <div className="audience-details">
+      <details className="questions-section">
+        <summary><MessagesSquare size={19} aria-hidden="true" /> Questions &amp; votes
+          <span>{upNextCount} up next</span><ChevronDown size={18} aria-hidden="true" /></summary>
+        <div className="disclosure-content">
+        <div className="queue-heading"><h2>Choose what comes next</h2><span className="voting-state">{board.votingOpen ? 'Voting open' : 'Voting paused'}</span></div>
+        {!session.canVote && <p className="section-description">Sign in above to upvote with your organisational Entra account.</p>}
         <div className="tabs" aria-label="Filter questions">
-          <button aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>Up next <span>{board.questions.filter(q => !q.answered).length}</span></button>
+          <button aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>Up next <span>{upNextCount}</span></button>
           <button aria-pressed={filter === 'mine'} onClick={() => setFilter('mine')}>My votes</button>
           <button aria-pressed={filter === 'answered'} onClick={() => setFilter('answered')}>Answered <Check size={14} aria-hidden="true" /></button>
         </div>
-        {voteError && <ErrorNotice message={voteError} />}
         <div className="question-list">
           {questions.length ? questions.map(question => <QuestionCard key={question.id} question={question}
-            current={question.id === board.currentQuestionId} votingOpen={board.votingOpen && session.canVote}
+            votingOpen={board.votingOpen && session.canVote}
             pending={pending !== null} onVote={() => void vote(question.id)} />)
-            : <div className="empty-state"><Flame size={24} aria-hidden="true" /><h3>{filter === 'mine' ? 'Your favourites live here.' : 'Room for more conversation.'}</h3>
-              <p>{filter === 'mine' ? 'Upvote a question to save it to this view.' : 'The host will share questions here when they are ready.'}</p></div>}
+            : <div className="empty-state"><p>{filter === 'mine' ? 'Your other voted questions will appear here.' :
+              filter === 'answered' ? 'Answered questions will appear here.' : 'The host will share more questions here.'}</p></div>}
         </div>
         <p className="fine-print voting-note"><ShieldCheck size={15} aria-hidden="true" /> One vote per question, per organisational Entra identity.
           Changing your name, clearing cookies or using another browser does not reset votes for that identity.</p>
-      </section>
-      <aside className="panel-section" aria-labelledby="panel-title">
-        <p className="eyebrow">GOOD COMPANY</p>
-        <h2 id="panel-title">By the fireside</h2>
-        <p className="section-description">The people behind the conversation.</p>
-        {board.panellists.length ? board.panellists.map((person, index) => <article className="person-card" key={person.id}>
-          <div className="person-avatar" aria-hidden="true">{person.name.split(/\s+/).slice(0, 2).map(s => s[0]).join('')}</div>
-          <div className="person-copy"><span className="person-number">PANELLIST {String(index + 1).padStart(2, '0')}</span>
+        </div>
+      </details>
+      <details className="panel-section">
+        <summary><Users size={19} aria-hidden="true" /> Meet the panel
+          <span>{board.panellists.length} panellists</span><ChevronDown size={18} aria-hidden="true" /></summary>
+        <div className="disclosure-content">
+          {board.panellists.length ? board.panellists.map(person => <article className="person-card" key={person.id}>
             <h3>{person.name}</h3><span className="person-role">{person.role}</span>
-            {person.bio && <p>{person.bio}</p>}</div>
-        </article>) : <div className="empty-state"><Users size={24} aria-hidden="true" /><p>The host hasn't announced the panel yet.</p></div>}
-        <div className="how-it-works"><Snowflake size={22} aria-hidden="true" /><h3>A little fireside etiquette</h3>
-          <p>Stay curious. Be kind. Vote for a question you'd love the panel to explore.</p>
-          <a href="#questions-title">Find your next question <ArrowDown size={16} aria-hidden="true" /></a></div>
-      </aside>
+            {person.bio && <p>{person.bio}</p>}
+          </article>) : <p className="section-description">The host hasn't announced the panel yet.</p>}
+        </div>
+      </details>
     </div>
   </>;
 }
 
-export function QuestionCard({ question, current, votingOpen, pending, onVote }: {
-  question: Question; current: boolean; votingOpen: boolean; pending: boolean; onVote: () => void;
+export function CurrentActivity({ question, votingOpen, canVote, pending, onVote, children }: {
+  question?: Question; votingOpen: boolean; canVote: boolean; pending: boolean;
+  onVote: () => void; children?: ReactNode;
 }) {
-  return <article className={`question-card ${current ? 'is-current' : ''}`}>
+  return <section className={`activity-stage ${question ? 'current-question' : 'waiting-activity'}`} aria-labelledby="activity-title">
+    <div className="activity-copy" key={question?.id ?? 'waiting'}>
+      <h2 id="activity-title" aria-live="polite" aria-atomic="true">{question?.text ?? 'A seat by the fire.'}</h2>
+      <p className="activity-description">{question?.category || (question ? 'The current conversation.' :
+        'The host is setting the scene. The next discussion will appear here automatically.')}</p>
+      <div className="activity-meta"><span><Radio size={17} aria-hidden="true" />{question ? 'Discussing now' : 'Waiting for the host'}</span>
+        {question && <span>{question.votes} {question.votes === 1 ? 'vote' : 'votes'}</span>}</div>
+      {canVote && question && <button className="button-primary activity-vote" onClick={onVote}
+        disabled={pending || question.hasVoted || !votingOpen || question.answered}
+        aria-label={`${question.hasVoted ? 'Voted for' : 'Upvote'}: ${question.text}`} aria-pressed={question.hasVoted}>
+        {question.hasVoted ? <Check size={18} aria-hidden="true" /> : <ChevronUp size={20} aria-hidden="true" />}
+        {question.hasVoted ? 'Your vote is in' : !votingOpen ? 'Voting paused' : pending ? 'Saving vote...' : 'Upvote this question'}
+      </button>}
+      {canVote && !question && <p className="ready-note"><Check size={16} aria-hidden="true" /> Signed in and ready to vote.</p>}
+      {children}
+    </div>
+    <figure className="activity-photo">
+      <img src="/branding/fireside-scene.jpg" alt="" width={2280} height={1522} />
+      <figcaption>Original show photograph,<br />not this event's confirmed panel.</figcaption>
+    </figure>
+  </section>;
+}
+
+export function QuestionCard({ question, votingOpen, pending, onVote }: {
+  question: Question; votingOpen: boolean; pending: boolean; onVote: () => void;
+}) {
+  return <article className="question-card">
     <button className={`vote-button ${question.hasVoted ? 'has-voted' : ''}`}
       onClick={onVote} disabled={pending || question.hasVoted || !votingOpen || question.answered}
       aria-label={`${question.hasVoted ? 'Voted for' : 'Upvote'}: ${question.text}`}
@@ -228,7 +236,6 @@ export function QuestionCard({ question, current, votingOpen, pending, onVote }:
       <strong>{question.votes}</strong><span>{question.hasVoted ? 'VOTED' : 'VOTES'}</span>
     </button>
     <div><div className="question-tags"><span>{question.category || 'Around the fire'}</span>
-      {current && <span className="current-tag">Discussing now</span>}
       {question.answered && <span>Answered</span>}</div>
       <h3>{question.text}</h3></div>
   </article>;
@@ -240,7 +247,7 @@ export function Surface({ title, children }: { title: string; children: ReactNod
 
 export function Privacy() {
   return <article className="privacy-page">
-    <p className="eyebrow">A LITTLE TRANSPARENCY</p><h1>Privacy &amp; participation</h1>
+    <h1>Privacy &amp; participation</h1>
     <p>You don't need a Microsoft account to view the audience page. Set a display name to enter.
       Upvoting requires a work or school Microsoft Entra account from any organisation.
       Your display name is stored in a protected, HTTP-only essential cookie, not in the vote database or a public attendee list.</p>
