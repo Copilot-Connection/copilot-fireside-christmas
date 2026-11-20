@@ -31,7 +31,7 @@ public static class Api
     public static void MapFiresideApi(this WebApplication app)
     {
         app.MapGet("/api/board", async (FiresideDb db, HttpContext context) =>
-            Results.Ok(await Snapshot(db, false, context.RequestAborted)));
+            Results.Ok(await Snapshot(db, false, context.RequestAborted, EntraIdentity.VoterKey(context.User))));
         app.MapGet("/api/landing-image", async (FiresideDb db, CancellationToken token) =>
         {
             var image = await db.Boards.AsNoTracking().Select(b => new { b.LandingImageData, b.LandingImageContentType })
@@ -153,7 +153,7 @@ public static class Api
             }));
     }
 
-    public static async Task<BoardView> Snapshot(FiresideDb db, bool admin, CancellationToken token)
+    public static async Task<BoardView> Snapshot(FiresideDb db, bool admin, CancellationToken token, Guid? voter = null)
     {
         // A consistent snapshot prevents half-applied host changes appearing in the audience UI.
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, token);
@@ -167,7 +167,9 @@ public static class Api
         var questions = await db.Questions.AsNoTracking().Where(q => admin || q.Visible)
             .OrderBy(q => q.SortOrder).ThenBy(q => q.Id)
             .Select(q => new QuestionView(q.Id, q.Text, q.Category, q.Visible, q.Answered, q.SortOrder,
-                db.Votes.Where(v => v.QuestionId == q.Id).Sum(v => (long?)v.Delta) ?? 0))
+                db.Votes.Where(v => v.QuestionId == q.Id).Sum(v => (long?)v.Delta) ?? 0,
+                voter == null ? null : db.Votes.Where(v => v.QuestionId == q.Id && v.ParticipantId == voter)
+                    .Sum(v => (long?)v.Delta) ?? 0))
             .ToListAsync(token);
         await transaction.CommitAsync(token);
         return new(board.Title, board.Subtitle, board.VotingOpen,

@@ -6,7 +6,7 @@ import { useBoard } from './useBoard';
 import { ErrorNotice, Loading, Surface } from './App';
 
 type PersonDraft = Omit<Panellist, 'id'>;
-type QuestionDraft = Omit<Question, 'id' | 'score'>;
+type QuestionDraft = Omit<Question, 'id' | 'score' | 'myScore'>;
 const emptyPerson: PersonDraft = { name: '', role: '', bio: '', visible: false, sortOrder: 0 };
 const emptyQuestion: QuestionDraft = { text: '', category: '', visible: false, answered: false, sortOrder: 0 };
 

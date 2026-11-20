@@ -3,7 +3,7 @@ export type Panellist = {
 };
 export type Question = {
   id: string; text: string; category: string; visible: boolean; answered: boolean;
-  sortOrder: number; score: number;
+  sortOrder: number; score: number; myScore: number | null;
 };
 export type ReactionKind = 'like' | 'dislike' | 'epic';
 export type LiveReaction = { id: string; questionId: string; kind: ReactionKind; expires: number };

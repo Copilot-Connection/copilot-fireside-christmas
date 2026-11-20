@@ -6,7 +6,7 @@ import type { Question } from './types';
 afterEach(cleanup);
 const question: Question = {
   id: '1', text: 'What should we build?', category: 'Looking ahead', visible: true,
-  answered: false, sortOrder: 0, score: 4,
+  answered: false, sortOrder: 0, score: 4, myScore: -1,
 };
 const artwork = { imageUrl: '/branding/christmas-fireside.png', imageDescription: 'Event poster' };
 
@@ -15,7 +15,7 @@ describe('Repeatable audience reactions', () => {
     ['Like the point', 'like'], ["Don't like this point", 'dislike'], ['EPIC POINT!', 'epic'],
   ])('sends the selected action: %s', (label, kind) => {
     const react = vi.fn();
-    render(<QuestionCard question={question} votingOpen pending={false} onReact={react} />);
+    render(<CurrentActivity {...artwork} question={question} votingOpen canVote pending={false} onReact={react} />);
     fireEvent.click(screen.getByRole('button', { name: `${label}: ${question.text}` }));
     expect(react).toHaveBeenCalledWith(kind);
     expect(screen.getByText('4 points')).toBeInTheDocument();
@@ -27,7 +27,7 @@ describe('Repeatable audience reactions', () => {
     { votingOpen: true, answered: false, pending: true },
   ])('disables all three actions when ineligible: %j', ({ votingOpen, pending, answered }) => {
     const react = vi.fn();
-    render(<QuestionCard question={{ ...question, answered }} votingOpen={votingOpen} pending={pending} onReact={react} />);
+    render(<CurrentActivity {...artwork} question={{ ...question, answered }} votingOpen={votingOpen} canVote pending={pending} onReact={react} />);
     for (const button of screen.getAllByRole('button')) {
       expect(button).toBeDisabled();
       fireEvent.click(button);
@@ -36,10 +36,24 @@ describe('Repeatable audience reactions', () => {
   });
 
   it('renders untrusted question text as text rather than markup', () => {
-    const { container } = render(<QuestionCard question={{ ...question, text: '<img src=x onerror=alert(1)>' }}
-      votingOpen pending={false} onReact={vi.fn()} />);
+    const { container } = render(<QuestionCard question={{ ...question, text: '<img src=x onerror=alert(1)>' }} />);
     expect(container.querySelector('img')).toBeNull();
     expect(screen.getByRole('heading', { level: 3 })).toHaveTextContent('<img src=x onerror=alert(1)>');
+  });
+});
+
+describe('Read-only question totals', () => {
+  it('separates the total from this viewer net points without exposing vote controls', () => {
+    render(<QuestionCard question={question} />);
+    expect(screen.getByText('Total points').parentElement).toHaveTextContent('4');
+    expect(screen.getByText('Your points').parentElement).toHaveTextContent('-1');
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+  });
+
+  it('does not present an unauthenticated viewer as having contributed zero', () => {
+    render(<QuestionCard question={{ ...question, myScore: null }} />);
+    expect(screen.getByText('Sign in to see')).toBeVisible();
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 });
 

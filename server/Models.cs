@@ -71,7 +71,7 @@ public sealed record QuestionInput(string? Text, string? Category, bool Visible,
 public sealed record ReactionInput(Guid RequestId, string Kind);
 public sealed record LiveReaction(Guid Id, Guid QuestionId, string Kind);
 public sealed record QuestionView(Guid Id, string Text, string Category, bool Visible, bool Answered,
-    int SortOrder, long Score);
+    int SortOrder, long Score, long? MyScore);
 public sealed record BoardView(string Title, string Subtitle, bool VotingOpen, Guid? CurrentQuestionId,
     long Revision, IReadOnlyList<Panellist> Panellists, IReadOnlyList<QuestionView> Questions,
     string LandingImageUrl, string LandingImageDescription, bool HasCustomLandingImage);

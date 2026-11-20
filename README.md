@@ -15,6 +15,10 @@ workflows have been created.** Scaffolding and provisioning require separate app
   switch between Live, Questions & votes, and Panellists without leaving the page,
   with arrow/Home/End keyboard navigation. Short screens and long content scroll
   naturally; nothing is clipped to a fixed height.
+- The compact header contains the demo notice, connection status and account
+  controls. Question cards are read-only, with separate Total points and Your points
+  boxes. Your points are the signed-in viewer's net +1/-1/+3 contribution, not an
+  action count or a list of other participants. Only the Live view has voting controls.
 - The default landing view uses a local copy of the user-selected December event
   poster. Hosts can upload a replacement PNG/JPEG and accessible description,
   restore the default, or select **Show landing page** to stop the discussion.
@@ -129,6 +133,9 @@ cross-origin cookie and authentication configuration. Azure SignalR fans out a
 data-free change event; browsers then fetch their own permitted projection.
 Transient reaction messages contain only the request ID, question ID and action
 kind, never the voter's identity or name.
+Personal point totals are derived server-side from the authenticated Entra identity
+and returned only in that viewer's uncached board response; anonymous viewers receive
+no personal total. They are never included in public hub messages.
 SQL Server/Azure SQL is mandatory outside local development/tests: local SQLite
 must not be put on App Service ephemeral storage or used for scaled-out production.
 

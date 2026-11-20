@@ -96,6 +96,13 @@ public sealed class BoardTests
         (await React(otherIdentity, question.Id, "dislike")).EnsureSuccessStatusCode();
         Assert.Equal(4, (await client.GetFromJsonAsync<BoardView>("/api/board"))!.Questions[0].Score);
         Assert.Equal(HttpStatusCode.Conflict, (await React(otherIdentity, question.Id, requestId: requestId)).StatusCode);
+        Assert.Equal(5, (await client.GetFromJsonAsync<BoardView>("/api/board"))!.Questions[0].MyScore);
+        Assert.Equal(5, (await secondBrowser.GetFromJsonAsync<BoardView>("/api/board"))!.Questions[0].MyScore);
+        Assert.Equal(-1, (await otherIdentity.GetFromJsonAsync<BoardView>("/api/board"))!.Questions[0].MyScore);
+        using var anonymous = await site.Client();
+        var publicQuestion = (await anonymous.GetFromJsonAsync<BoardView>("/api/board"))!.Questions[0];
+        Assert.Equal(4, publicQuestion.Score);
+        Assert.Null(publicQuestion.MyScore);
     }
 
     [Fact]

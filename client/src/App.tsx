@@ -29,8 +29,8 @@ export function App() {
   </PageFrame>;
 }
 
-function PageFrame({ session, adminPage = false, fillViewport = false, children }: {
-  session: Session | null; adminPage?: boolean; fillViewport?: boolean; children: ReactNode;
+function PageFrame({ session, adminPage = false, fillViewport = false, audienceBar, children }: {
+  session: Session | null; adminPage?: boolean; fillViewport?: boolean; audienceBar?: ReactNode; children: ReactNode;
 }) {
   return <div className={`site-shell ${adminPage ? '' : 'fireside-surface'}`}>
     {!adminPage && <svg className="fireside-mesh" viewBox="0 0 1400 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
@@ -43,12 +43,15 @@ function PageFrame({ session, adminPage = false, fillViewport = false, children 
         <Flame className="brand-symbol" size={28} aria-hidden="true" />
         <span>Copilot<span className="brand-sub">Fireside Chat</span></span>
       </a>
+      {session?.demo && <div className="demo-strip">
+        <strong><Snowflake size={15} aria-hidden="true" /> LOCAL DEMO</strong>
+        <span>Sample panellists &amp; questions. Not a scheduled event.</span>
+      </div>}
       <nav aria-label="Main navigation">
         <a href="/admin" aria-current={adminPage ? 'page' : undefined}><ShieldCheck size={16} aria-hidden="true" /> Host desk</a>
       </nav>
+      {audienceBar}
     </header>
-    {session?.demo && <div className="demo-strip"><Snowflake size={15} aria-hidden="true" /> LOCAL DEMO
-      <span>Sample panellists &amp; questions. Not a scheduled event.</span></div>}
     <main id="main">{children}</main>
     </div>
     <footer className="site-footer">
@@ -160,8 +163,7 @@ function Audience({ session, refreshSession }: { session: Session; refreshSessio
   const views = [
     { id: 'live', label: 'Live' }, { id: 'questions', label: 'Questions & votes' }, { id: 'panel', label: 'Panellists' },
   ] as const;
-  return <PageFrame session={session} fillViewport>
-    <ReactionOverlay reactions={reactions} />
+  return <PageFrame session={session} fillViewport audienceBar={
     <div className="audience-bar">
       <span className={`connection ${connection === 'Live' ? 'connected' : ''}`} role="status">
         <span className="status-dot" /> {connection === 'Live' ? 'Connected to the fireside' : connection}
@@ -171,7 +173,8 @@ function Audience({ session, refreshSession }: { session: Session; refreshSessio
           <input type="hidden" name="__RequestVerificationToken" value={session.csrfToken} />
           <button className="text-button" type="submit">Sign out of Microsoft</button>
         </form>}</div>
-    </div>
+    </div>}>
+    <ReactionOverlay reactions={reactions} />
     {editName && <div className="name-edit"><NameForm session={session} initial={session.participantName ?? ''}
       onSaved={async () => { await refreshSession(); setEditName(false); }} /></div>}
     <div className="audience-tabs" role="tablist" aria-label="Fireside views" onKeyDown={event => {
@@ -205,20 +208,18 @@ function Audience({ session, refreshSession }: { session: Session; refreshSessio
     </div>
     {voteError && <ErrorNotice message={voteError} />}
     <section className="tab-panel questions-section" role="tabpanel" id="panel-questions" aria-labelledby="tab-questions" hidden={view !== 'questions'}>
-        <div className="queue-heading"><h2>Choose what comes next</h2><span className="voting-state">{board.votingOpen ? 'Voting open' : 'Voting paused'}</span></div>
-        {!session.canVote && <p className="section-description">Sign in on the Live tab with your organisational Entra account to react.</p>}
+        <div className="queue-heading"><h2>Questions &amp; points</h2><span className="voting-state">{board.votingOpen ? 'Voting open' : 'Voting paused'}</span></div>
+        {!session.canVote && <p className="section-description">Sign in on the Live tab with your organisational Entra account to see your points and react to the current discussion.</p>}
         <div className="tabs" aria-label="Filter questions">
           <button aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>Open questions <span>{board.questions.filter(q => !q.answered).length}</span></button>
           <button aria-pressed={filter === 'answered'} onClick={() => setFilter('answered')}>Answered <Check size={14} aria-hidden="true" /></button>
         </div>
         <div className="question-list">
-          {questions.length ? questions.map(question => <QuestionCard key={question.id} question={question}
-            votingOpen={board.votingOpen && session.canVote}
-            pending={pending !== null} onReact={kind => void vote(question.id, kind)} />)
+          {questions.length ? questions.map(question => <QuestionCard key={question.id} question={question} />)
             : <div className="empty-state"><p>{filter === 'answered' ? 'Answered questions will appear here.' : 'The host will share more questions here.'}</p></div>}
         </div>
-        <p className="fine-print voting-note"><ShieldCheck size={15} aria-hidden="true" /> React as often as you like while voting is open.
-          Likes add 1, dislikes subtract 1, and epic points add 3. Short per-account limits keep the room responsive.</p>
+        <p className="fine-print voting-note"><ShieldCheck size={15} aria-hidden="true" /> React to the current discussion on the Live tab.
+          Likes add 1, dislikes subtract 1, and epic points add 3. Your points show your net contribution to each question.</p>
     </section>
     <section className="tab-panel panel-section" role="tabpanel" id="panel-panel" aria-labelledby="tab-panel" hidden={view !== 'panel'}>
           <h2>Meet the panel</h2>
@@ -259,14 +260,16 @@ export function CurrentActivity({ question, imageUrl, imageDescription, votingOp
   </section>;
 }
 
-export function QuestionCard({ question, votingOpen, pending, onReact }: {
-  question: Question; votingOpen: boolean; pending: boolean; onReact: (kind: ReactionKind) => void;
-}) {
+export function QuestionCard({ question }: { question: Question }) {
   return <article className="question-card">
     <div><div className="question-tags"><span>{question.category || 'Around the fire'}</span>
       {question.answered && <span>Answered</span>}</div>
-      <h3>{question.text}</h3><output className="question-score" aria-live="polite">{question.score} {Math.abs(question.score) === 1 ? 'point' : 'points'}</output></div>
-    <ReactionButtons question={question} enabled={votingOpen} pending={pending} onReact={onReact} />
+      <h3>{question.text}</h3></div>
+    <dl className="question-points">
+      <div><dt>Total points</dt><dd className="total-points" aria-live="polite">{question.score}</dd></div>
+      <div><dt>Your points</dt><dd className={`personal-points ${question.myScore === null ? 'score-unavailable' : ''}`}
+        aria-live="polite">{question.myScore ?? 'Sign in to see'}</dd></div>
+    </dl>
   </article>;
 }
 
