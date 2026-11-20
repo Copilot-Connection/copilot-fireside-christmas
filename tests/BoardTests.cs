@@ -20,10 +20,12 @@ namespace Fireside.Tests;
 
 public sealed class BoardTests
 {
-    [Fact]
-    public async Task Audience_sees_only_published_content_and_admin_requires_role()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Audience_sees_only_published_content_and_admin_requires_role(bool cosmos)
     {
-        await using var site = new Site();
+        await using var site = new Site(cosmos);
         using var audience = await site.Client();
         var board = await audience.GetFromJsonAsync<BoardView>("/api/board");
         Assert.Single(board!.Questions);
@@ -38,10 +40,12 @@ public sealed class BoardTests
         Assert.Equal(2, all.Panellists.Count);
     }
 
-    [Fact]
-    public async Task Identity_is_server_issued_and_writes_require_antiforgery()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Identity_is_server_issued_and_writes_require_antiforgery(bool cosmos)
     {
-        await using var site = new Site();
+        await using var site = new Site(cosmos);
         using var client = await site.Client();
         var board = (await client.GetFromJsonAsync<BoardView>("/api/board"))!;
         var id = board.Questions[0].Id;
@@ -65,10 +69,12 @@ public sealed class BoardTests
             new { text = "unauthorized", visible = true, isAdmin = true })).StatusCode);
     }
 
-    [Fact]
-    public async Task Reactions_are_repeatable_but_retries_of_the_same_request_are_idempotent()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Reactions_are_repeatable_but_retries_of_the_same_request_are_idempotent(bool cosmos)
     {
-        await using var site = new Site();
+        await using var site = new Site(cosmos);
         using var client = await site.Client("Attendee");
         await Token(client);
         (await client.PutAsJsonAsync("/api/participant", new NameInput("A curious person"))).EnsureSuccessStatusCode();
@@ -105,10 +111,12 @@ public sealed class BoardTests
         Assert.Null(publicQuestion.MyScore);
     }
 
-    [Fact]
-    public async Task Admin_mutations_enforce_revision_and_clear_ineligible_current_question()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Admin_mutations_enforce_revision_and_clear_ineligible_current_question(bool cosmos)
     {
-        await using var site = new Site();
+        await using var site = new Site(cosmos);
         using var admin = await site.Client("Fireside.Admin");
         await Token(admin);
         var board = (await admin.GetFromJsonAsync<BoardView>("/api/admin/board"))!;
@@ -172,10 +180,12 @@ public sealed class BoardTests
         Assert.Equal(0, await final.ServiceProvider.GetRequiredService<FiresideDb>().Votes.CountAsync());
     }
 
-    [Fact]
-    public async Task Hub_notifies_after_commit_but_exposes_no_client_publish_method()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Hub_notifies_after_commit_but_exposes_no_client_publish_method(bool cosmos)
     {
-        await using var site = new Site();
+        await using var site = new Site(cosmos);
         using var admin = await site.Client("Fireside.Admin");
         await Token(admin);
         await using var hub = new HubConnectionBuilder().WithUrl("https://localhost/live", options =>
@@ -194,10 +204,12 @@ public sealed class BoardTests
         await Assert.ThrowsAsync<Microsoft.AspNetCore.SignalR.HubException>(() => hub.InvokeAsync("Publish", "forged state"));
     }
 
-    [Fact]
-    public async Task External_tenant_accounts_can_vote_but_external_admin_roles_cannot_manage_the_event()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task External_tenant_accounts_can_vote_but_external_admin_roles_cannot_manage_the_event(bool cosmos)
     {
-        await using var site = new Site();
+        await using var site = new Site(cosmos);
         using var external = await site.Client("Fireside.Admin");
         external.DefaultRequestHeaders.Add("X-Test-Tenant", EntraIdentity.DemoVoterTenant);
         await Token(external);
@@ -240,10 +252,12 @@ public sealed class BoardTests
         Assert.Contains("Demo authentication", exception.Message);
     }
 
-    [Fact]
-    public async Task Scores_can_be_negative_and_invalid_reaction_actions_are_rejected()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Scores_can_be_negative_and_invalid_reaction_actions_are_rejected(bool cosmos)
     {
-        await using var site = new Site();
+        await using var site = new Site(cosmos);
         using var client = await site.Client("Attendee");
         await Token(client);
         (await client.PutAsJsonAsync("/api/participant", new NameInput("Reactor"))).EnsureSuccessStatusCode();
@@ -347,10 +361,12 @@ public sealed class BoardTests
         Assert.Equal(LandingImages.DefaultUrl, reset.LandingImageUrl);
     }
 
-    [Fact]
-    public async Task Speaker_timers_are_authoritative_and_group_mode_blocks_votes_even_after_stopping_the_clock()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Speaker_timers_are_authoritative_and_group_mode_blocks_votes_even_after_stopping_the_clock(bool cosmos)
     {
-        await using var site = new Site();
+        await using var site = new Site(cosmos);
         using var admin = await site.Client("Fireside.Admin");
         using var voter = await site.Client("Attendee");
         using var audience = await site.Client();
@@ -521,10 +537,12 @@ public sealed class BoardTests
         Assert.DoesNotContain(second.Id, (await audience.GetFromJsonAsync<BoardView>("/api/board"))!.Questions[0].SpeakerIds);
     }
 
-    [Fact]
-    public async Task Speaker_scores_keep_cast_time_attribution_and_audited_adjustments_leave_voter_history_unchanged()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Speaker_scores_keep_cast_time_attribution_and_audited_adjustments_leave_voter_history_unchanged(bool cosmos)
     {
-        await using var site = new Site();
+        await using var site = new Site(cosmos);
         using var admin = await site.Client("Fireside.Admin");
         using var voter = await site.Client("Attendee");
         using var audience = await site.Client();
@@ -563,17 +581,26 @@ public sealed class BoardTests
         (await admin.PutAsJsonAsync("/api/admin/scoreboard", new ScoreboardInput(true))).EnsureSuccessStatusCode();
         var published = (await audience.GetFromJsonAsync<BoardView>("/api/board"))!;
         Assert.Equal(10, published.Scoreboard!.Speakers.Single(s => s.Id == first.Id).Points);
-        using (var scope = site.Services.CreateScope())
+        ScoreAdjustment adjustment;
+        if (cosmos)
         {
+            var stored = site.Services.GetRequiredService<MemoryCosmosDocuments>();
+            Assert.Equal(2, stored.Votes.Count);
+            Assert.Equal(first.Id, stored.Votes[requestId].SpeakerId);
+            adjustment = Assert.Single(stored.Adjustments);
+        }
+        else
+        {
+            using var scope = site.Services.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<FiresideDb>();
             Assert.Equal(2, await db.Votes.CountAsync());
             Assert.Equal(first.Id, (await db.Votes.FindAsync(requestId))!.SpeakerId);
-            var adjustment = await db.ScoreAdjustments.SingleAsync();
-            Assert.Equal(7, adjustment.Delta);
-            Assert.Equal("Host correction", adjustment.Reason);
-            Assert.NotEqual(Guid.Empty, adjustment.ActorId);
-            Assert.Equal(site.Clock.GetUtcNow(), adjustment.ChangedAt);
+            adjustment = await db.ScoreAdjustments.SingleAsync();
         }
+        Assert.Equal(7, adjustment.Delta);
+        Assert.Equal("Host correction", adjustment.Reason);
+        Assert.NotEqual(Guid.Empty, adjustment.ActorId);
+        Assert.Equal(site.Clock.GetUtcNow(), adjustment.ChangedAt);
         await Revision(admin);
         (await admin.PutAsJsonAsync(path, new SpeakerInput(first.Id))).EnsureSuccessStatusCode();
         (await React(voter, question.Id)).EnsureSuccessStatusCode();
@@ -590,10 +617,12 @@ public sealed class BoardTests
         Assert.DoesNotContain("\"scoreboard\":", await audience.GetStringAsync("/api/board"));
     }
 
-    [Fact]
-    public async Task Score_edits_and_visibility_enforce_role_csrf_revision_and_input_validation()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Score_edits_and_visibility_enforce_role_csrf_revision_and_input_validation(bool cosmos)
     {
-        await using var site = new Site();
+        await using var site = new Site(cosmos);
         using var admin = await site.Client("Fireside.Admin");
         using var voter = await site.Client("Attendee");
         using var audience = await site.Client();
@@ -658,7 +687,7 @@ public sealed class BoardTests
     }
 }
 
-public sealed class Site : WebApplicationFactory<Program>
+public sealed class Site(bool cosmos = false) : WebApplicationFactory<Program>
 {
     public TestClock Clock { get; } = new();
     private readonly string directory = Path.Combine(Path.GetTempPath(), $"fireside-tests-{Guid.NewGuid():N}");
@@ -674,6 +703,13 @@ public sealed class Site : WebApplicationFactory<Program>
         builder.UseSetting("AzureAd:TenantId", EntraIdentity.DemoTenant);
         builder.ConfigureServices(services =>
         {
+            if (cosmos)
+            {
+                services.AddSingleton<MemoryCosmosDocuments>();
+                services.AddSingleton<ICosmosEventDocuments>(provider => provider.GetRequiredService<MemoryCosmosDocuments>());
+                services.AddSingleton<IEventImages, MemoryEventImages>();
+                services.AddScoped<IEventStore, CosmosEventStore>();
+            }
             services.AddSingleton<TimeProvider>(Clock);
             services.AddAuthentication(options =>
             {
@@ -699,6 +735,9 @@ public sealed class Site : WebApplicationFactory<Program>
             db.Panellists.AddRange(new Panellist { Name = "Visible person", Visible = true },
                 new Panellist { Name = "Hidden person", Visible = false });
             await db.SaveChangesAsync();
+            if (cosmos)
+                Services.GetRequiredService<MemoryCosmosDocuments>().Seed(
+                    await new SqliteEventStore(db).Read(null, default));
             initialized = true;
         }
         return client;

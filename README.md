@@ -176,7 +176,8 @@ flowchart LR
   Host[Host desk] --> App
   App --> Entra[Entra ID: organisational users]
   Entra --> Roles[Host tenant + admin role]
-  App --> SQL[Azure SQL: event and votes]
+  App --> Cosmos[Cosmos DB for NoSQL: event and vote ledger]
+  App --> Blob[Private Blob Storage: uploaded images]
   App --> SignalR[Azure SignalR: Default mode]
   SignalR --> Audience
   SignalR --> Host
@@ -191,8 +192,27 @@ kind, never the voter's identity or name.
 Personal point totals are derived server-side from the authenticated Entra identity
 and returned only in that viewer's uncached board response; anonymous viewers receive
 no personal total. They are never included in public hub messages.
-SQL Server/Azure SQL is mandatory outside local development/tests: local SQLite
+Cosmos DB for NoSQL is mandatory outside local development/tests: local SQLite
 must not be put on App Service ephemeral storage or used for scaled-out production.
+The native Cosmos SDK uses one event partition (`/eventId`): an event-core document
+holds metadata, image references and score projections, while immutable vote and
+adjustment documents and per-voter totals are separate. A transactional batch
+conditionally replaces the core using its ETag and creates the ledger/personal
+updates together. Retries recheck the active speaker, group-mode voting restriction
+and host revision; duplicate reaction IDs do not replay reactions or points.
+Votes change the internal ETag but not the host-facing revision.
+The account must use **Strong consistency**, also requested by the client, so an
+invalidation received on another App Service instance cannot fetch an older snapshot.
+Personal totals are read with a core ETag recheck for a coherent combined response.
+
+Single-region Serverless suits an intermittent event, but RU consumption must be
+measured before opening to the full audience. Strong reads cost more RUs, and all
+event writes contend on one core document. This intentionally targets a small live
+panel, not an unbounded high-write multi-event platform. Cosmos limits each item
+and transactional request to 2 MB, each batch to 100 operations and each logical
+partition to 20 GB. Images never enter core documents; oversized metadata is rejected
+without committing a partial change. Configure monitoring for throttling, latency,
+document/partition size and spend; client conflicts are explicit and retryable.
 
 The Web application registration must support **Accounts in any organisational
 directory (multitenant)**, not personal Microsoft accounts. Audience OIDC uses the
@@ -259,8 +279,13 @@ creating or modifying billable resources.
 | `ASPNETCORE_ENVIRONMENT` | `Production` |
 | `Demo__Enabled` | `false` (never deploy the Demo launch profile) |
 | `AllowedHosts` | Exact public App Service/custom host names, semicolon-separated |
-| `Database__Provider` | `SqlServer` |
-| `ConnectionStrings__Fireside` | Azure SQL connection string; prefer App Service managed identity with least-privilege DB permissions and encrypted transport |
+| `Database__Provider` | `Cosmos` |
+| `Cosmos__Endpoint` | HTTPS Cosmos DB for NoSQL account endpoint |
+| `Cosmos__Database` | Existing database name |
+| `Cosmos__Container` | Existing container partitioned by `/eventId`, with no TTL that expires active data |
+| `Cosmos__EventId` | Stable, nonempty partition identifier for this event |
+| `Storage__BlobServiceUri` | HTTPS Blob service URI; anonymous blob access disabled |
+| `Storage__Container` | Existing private image container |
 | `ConnectionStrings__AzureSignalR` | Azure SignalR connection string, kept in App Service/Key Vault configuration; service **Default** mode, never Serverless |
 | `AzureAd__TenantId` | Administrative directory tenant GUID |
 | `AzureAd__ClientId` | Web application client GUID |
@@ -284,21 +309,73 @@ admin and participant cookies. It must be shared by all instances serving the sa
 event, and treated as secret key material. App Service storage encryption/permissions
 protect the baseline file-based key ring; use a Blob/Key Vault-protected key ring if
 the deployment's security policy requires application-level key encryption. Plan
-slot/key sharing before using deployment slots. Back up SQL independently of the app.
+slot/key sharing before using deployment slots. Back up Cosmos and Blob independently
+of the application, and rehearse a coordinated restore of metadata and media.
 
-### Database initialization and operations
+The runtime uses its **system-assigned managed identity**, not a developer credential
+fallback or account key. Grant Cosmos DB Built-in Data Contributor scoped to the
+event container and Storage Blob Data Contributor scoped to its private container.
+Configure Cosmos account consistency as Strong; a client cannot strengthen a weaker
+account setting. Disable Cosmos local-key auth and Storage anonymous blob access.
+Private container access does not imply a private network endpoint: select the
+network/firewall topology at the infrastructure approval gate. Images are served
+through same-origin, visibility-checked application endpoints; no public Blob URL
+or SAS is sent to browsers.
 
-After resource/deployment approvals, provide configuration and run the published
-application with `--initialize-database` once against a **new, empty database**:
+### Existing-event migration to Cosmos DB
+
+The database change is not a provider/connection-string switch. After the separate
+resource and deployment approvals, create the empty Cosmos database/container and
+private Blob container, assign the operator's data-plane permissions, stop source
+and target writes, and take a verified source backup. Do not initialize/reseed the
+current event, repeat schema006 or delete its post-reset votes.
+
+The operator tool opens the SQLite source **read-only**, takes a consistent snapshot,
+checks integrity/foreign keys and validates score projections against the ledger.
+It preserves IDs, settings, speaker order, images, votes, score adjustments and their
+attribution. Existing data remains on the source; it is never rewritten or reset.
+Configure the same `Cosmos__*` and `Storage__*` values listed above outside source
+control, plus `AZURE_TENANT_ID` for the intended operator tenant. The tool uses
+Azure CLI credentials explicitly bound to that tenant; the operator needs Cosmos
+and Blob data-plane roles, not just subscription Owner.
 
 ```powershell
-dotnet .\Fireside.dll --initialize-database
+# Only after resource/deployment approvals, a verified backup and stopping writes.
+$env:FIRESIDE_SOURCE_WRITES_PAUSED = "true"
+dotnet run --project .\tools\Fireside.Import -- --import <source-sqlite-file>
+dotnet run --project .\tools\Fireside.Import -- --verify <source-sqlite-file>
 ```
 
-This explicitly creates the initial schema and an empty event, without sample
-speakers or questions, then exits. Use an operator identity with schema creation
-permissions for this step; use a separate least-privilege read/write app identity
-at runtime. Database creation is not automatically performed during normal startup.
+The importer refuses nonempty target event partitions. It uploads media, verifies
+SHA-256 hashes, copies and verifies every ledger and personal-total document, then
+publishes the core document **last** and verifies the whole event. Until that marker
+exists, event API requests fail explicitly with 503. It creates no Azure resources.
+Do not open traffic until verification succeeds and real authentication/live updates
+have been checked. The verification command compares against the paused source;
+after new cloud votes, differences are expected, not a reason to overwrite them.
+If staging fails, keep serving the unchanged source and inspect the failed private
+partition/media. Use a fresh empty event partition for an intentional retry, or
+approve specific cleanup after review; never automatically wipe or resume a partial
+import. Keep the original backup until cutover and restore are accepted.
+
+Blob writes and Cosmos commits cannot share a distributed transaction. Runtime
+uploads use unique names and publish references only after the upload succeeds.
+Failed/conflicting writes may leave unreferenced private blobs; the application
+deliberately does not delete media after uncertain commits. Retain them for recovery;
+perform reference-aware cleanup only while writes are stopped, after backup and
+review. Do not apply a blanket age-based deletion policy to referenced media.
+
+### Local database initialization and historical upgrades
+
+For a **new local SQLite database only**, use the configured local launch profile:
+
+```powershell
+dotnet run --project .\server\Fireside.csproj --launch-profile Entra -- --initialize-database
+```
+
+This explicitly creates the initial schema and an empty local event, without sample
+speakers or questions, then exits. Cosmos rejects this initializer and must use the
+verified importer instead. Database creation is not automatically performed during normal startup.
 The initializer uses EF `EnsureCreated` for this first schema: it is **not** a
 schema upgrade system; do not rerun it as an upgrade mechanism.
 
@@ -319,14 +396,16 @@ the reset after activation; never use it as an ongoing reset command. New votes
 and subsequent score adjustments are preserved during normal startup/restarts.
 Do not run these scripts on a freshly initialized current schema. The SQLite
 upgrade has been exercised against the persistent demo database with row-count,
-per-question total, integrity and foreign-key checks. The SQL Server scripts
-still require review/execution in the approved target environment before release.
+per-question total, integrity and foreign-key checks. SQL Server scripts are historical
+artifacts for previous releases, not part of the current Cosmos deployment.
+The previously identified SQL Server singleton-key/IDENTITY initializer issue has
+not been patched; SQL Server is no longer a supported production provider.
 Rehearse restore and compare totals before reopening writes.
 
 Before going live, verify real organisational sign-in from both the host tenant and
 an external tenant, personal-account rejection, external-tenant admin-role denial,
-host-tenant role assignment, Azure SQL connectivity and
-transactions, Azure SignalR fan-out across two app instances, TLS forwarding,
+host-tenant role assignment, managed-identity Cosmos/Blob connectivity and
+Cosmos transactional batches, Azure SignalR fan-out across two app instances, TLS forwarding,
 shared cookie keys and restore procedures in the approved environment. These
 cloud integrations are implemented but cannot be end-to-end certified without
 the resources/credentials and provisioning approval.
@@ -339,22 +418,27 @@ Operational notes:
   20 actions per 10 seconds per validated Entra identity per instance, with no
   queue. A 429 response is shown to the voter; cross-instance quotas require a
   separate design.
-- Uploaded landing artwork and published panellist photos are public and stored durably in the same SQL database,
-  not the App Service filesystem. Hosts can upload PNG/JPEG files up to 2 MiB,
+- Uploaded landing artwork and published panellist photos are publicly served by the
+  app but stored in private Blob Storage (SQLite BLOBs locally), not the App Service filesystem.
+  Hidden portraits remain admin-only. Hosts can upload PNG/JPEG files up to 2 MiB,
   8192 pixels per side and 24 megapixels. Landing artwork also requires a description
   up to 300 characters; portrait descriptions use the panellist's name.
   The server checks signatures/header dimensions, not a full image decode, and
   does not strip metadata: remove private metadata before upload. SVGs are not
-  accepted. Include image data in database backups and storage estimates.
+  accepted. Include image storage and referenced Blob backups in recovery plans and cost estimates.
 - Successful commits remain successful if notification delivery fails; the server
   logs the failure and client reconciliation repairs missed invalidations.
 - No display names, raw Entra identifiers or Entra tokens are stored in the event/vote
-  tables; action records contain stable pseudonymous voter hashes, not anonymous
+  documents; action records contain stable pseudonymous voter hashes, not anonymous
   identifiers. Reactions are not a one-person-one-vote poll. Publish an
   event contact and retention policy on `/privacy` before live use; the current text
   explicitly identifies that operator-owned policy as still to be supplied.
-- Question deletion removes its votes. There is deliberately no unauthenticated
-  public question submission endpoint.
+- Question deletion removes its visible scores and personal-total projection from
+  audience responses. Cosmos retains immutable historical vote/adjustment documents
+  for audit and request idempotency until an operator-approved event retention cleanup;
+  local SQLite keeps its historical cascading-deletion behavior. Removed speaker
+  attribution remains auditable. There is deliberately no unauthenticated public
+  question submission endpoint.
 
 ## Branding
 

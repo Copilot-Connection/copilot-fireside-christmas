@@ -10,6 +10,9 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 using Microsoft.IdentityModel.Validators;
 using System.Threading.RateLimiting;
+using Azure.Identity;
+using Azure.Storage.Blobs;
+using Microsoft.Azure.Cosmos;
 
 var initialize = args.Contains("--initialize-database");
 var seedDemo = args.Contains("--seed-demo");
@@ -28,17 +31,44 @@ builder.Services.AddSingleton(entra);
 const string audienceScheme = "EntraAudience";
 const string adminScheme = "EntraAdmin";
 
-var sqlite = builder.Configuration["Database:Provider"] == "Sqlite";
+var databaseProvider = builder.Configuration["Database:Provider"];
+var sqlite = databaseProvider == "Sqlite";
 if (sqlite && !builder.Environment.IsDevelopment() && !builder.Environment.IsEnvironment("Testing"))
-    throw new InvalidOperationException("Production requires shared SQL Server/Azure SQL, not SQLite.");
-var connection = builder.Configuration.GetConnectionString("Fireside");
-if (string.IsNullOrWhiteSpace(connection))
-    throw new InvalidOperationException("Configure ConnectionStrings:Fireside.");
-builder.Services.AddDbContext<FiresideDb>(options =>
+    throw new InvalidOperationException("Production requires Cosmos DB, not SQLite.");
+if (sqlite)
 {
-    if (sqlite) options.UseSqlite(connection);
-    else options.UseSqlServer(connection);
-});
+    var connection = builder.Configuration.GetConnectionString("Fireside");
+    if (string.IsNullOrWhiteSpace(connection)) throw new InvalidOperationException("Configure ConnectionStrings:Fireside.");
+    builder.Services.AddDbContext<FiresideDb>(options => options.UseSqlite(connection));
+    builder.Services.AddScoped<IEventStore, SqliteEventStore>();
+}
+else
+{
+    if (databaseProvider != "Cosmos")
+        throw new InvalidOperationException("Configure Database:Provider as Cosmos (or local-only Sqlite).");
+    string Required(string name) => !string.IsNullOrWhiteSpace(builder.Configuration[name])
+        ? builder.Configuration[name]! : throw new InvalidOperationException($"Configure {name}.");
+    var endpoint = new Uri(Required("Cosmos:Endpoint"));
+    var blobEndpoint = new Uri(Required("Storage:BlobServiceUri"));
+    if (endpoint.Scheme != "https" || blobEndpoint.Scheme != "https")
+        throw new InvalidOperationException("Cosmos and Blob endpoints must use HTTPS.");
+    var database = Required("Cosmos:Database");
+    var container = Required("Cosmos:Container");
+    var eventId = Required("Cosmos:EventId");
+    var imageContainer = Required("Storage:Container");
+    var credential = new ManagedIdentityCredential(ManagedIdentityId.SystemAssigned);
+    builder.Services.AddSingleton(_ => new CosmosClient(endpoint.AbsoluteUri, credential, new CosmosClientOptions
+    {
+        Serializer = new EventCosmosSerializer(),
+        ConsistencyLevel = ConsistencyLevel.Strong,
+        ConnectionMode = ConnectionMode.Gateway
+    }));
+    builder.Services.AddSingleton<ICosmosEventDocuments>(services => new CosmosEventDocuments(
+        services.GetRequiredService<CosmosClient>().GetContainer(database, container), eventId));
+    builder.Services.AddSingleton<IEventImages>(new BlobEventImages(
+        new BlobServiceClient(blobEndpoint, credential).GetBlobContainerClient(imageContainer)));
+    builder.Services.AddScoped<IEventStore, CosmosEventStore>();
+}
 var keyPath = builder.Configuration["DataProtection:KeyPath"];
 if (string.IsNullOrWhiteSpace(keyPath))
     throw new InvalidOperationException("Configure a persistent DataProtection:KeyPath.");
@@ -173,6 +203,8 @@ else if (!builder.Environment.IsDevelopment() && !builder.Environment.IsEnvironm
 var app = builder.Build();
 if (initialize)
 {
+    if (!sqlite)
+        throw new InvalidOperationException("Cosmos requires the verified event importer; do not seed or replace the existing event.");
     await DatabaseSetup.Initialize(app.Services, seedDemo);
     return;
 }
