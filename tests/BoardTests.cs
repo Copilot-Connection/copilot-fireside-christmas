@@ -713,6 +713,10 @@ public sealed class Site(bool cosmos = false, bool activeDiscussion = true) : We
             {
                 services.AddSingleton<MemoryCosmosDocuments>();
                 services.AddSingleton<ICosmosEventDocuments>(provider => provider.GetRequiredService<MemoryCosmosDocuments>());
+                services.AddSingleton<MemoryCosmosAccountContainer>();
+                services.AddSingleton<ICosmosAccountContainer>(provider => provider.GetRequiredService<MemoryCosmosAccountContainer>());
+                services.AddScoped<IAccountStore>(provider => new CosmosAccountStore(
+                    provider.GetRequiredService<ICosmosAccountContainer>(), MemoryCosmosAccountContainer.TestEventId));
                 services.AddSingleton<IEventImages, MemoryEventImages>();
                 services.AddScoped<IEventStore, CosmosEventStore>();
             }

@@ -9,14 +9,19 @@ export function useBoard(admin: boolean, enabled: boolean) {
   const [connection, setConnection] = useState('Connecting');
   const [reactions, setReactions] = useState<LiveReaction[]>([]);
   const generation = useRef(0);
+  const appliedGeneration = useRef(0);
   const mounted = useRef(false);
   const refresh = useCallback(async () => {
     const current = ++generation.current;
     try {
       const next = await request<Board>(admin ? '/api/admin/board' : '/api/board');
       if (mounted.current) {
-        setBoard(previous => previous && (next.revision < previous.revision ||
-          (next.revision === previous.revision && current !== generation.current)) ? previous : next);
+        setBoard(previous => {
+          if (previous && (next.revision < previous.revision ||
+            (next.revision === previous.revision && current < appliedGeneration.current))) return previous;
+          appliedGeneration.current = Math.max(appliedGeneration.current, current);
+          return next;
+        });
         if (current === generation.current) setError('');
       }
     } catch (error) {

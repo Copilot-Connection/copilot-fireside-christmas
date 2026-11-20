@@ -41,3 +41,30 @@ it('applies a saved host revision even when a hub refresh starts before its resp
   expect(result.current.board?.revision).toBe(3);
   unmount();
 });
+
+it('applies same-revision responses while newer refreshes are still in flight', async () => {
+  const hub = new HubConnectionBuilder().withUrl('http://localhost/live').build();
+  vi.spyOn(hub, 'start').mockResolvedValue();
+  vi.spyOn(hub, 'stop').mockResolvedValue();
+  vi.spyOn(HubConnectionBuilder.prototype, 'build').mockReturnValue(hub);
+  const request = vi.spyOn(api, 'request').mockResolvedValue(board);
+  const { result, unmount } = renderHook(() => useBoard(false, true));
+  await waitFor(() => expect(result.current.board?.revision).toBe(1));
+  const firstRefresh = deferred();
+  const secondRefresh = deferred();
+  request.mockReturnValueOnce(firstRefresh.promise).mockReturnValueOnce(secondRefresh.promise);
+  let first!: Promise<void>;
+  let second!: Promise<void>;
+  act(() => { first = result.current.refresh(); second = result.current.refresh(); });
+  await act(async () => {
+    firstRefresh.resolve({ ...board, subtitle: 'Vote received' });
+    await first;
+  });
+  expect(result.current.board?.subtitle).toBe('Vote received');
+  await act(async () => {
+    secondRefresh.resolve({ ...board, subtitle: 'Another vote received' });
+    await second;
+  });
+  expect(result.current.board?.subtitle).toBe('Another vote received');
+  unmount();
+});

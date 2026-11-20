@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Fireside;
+using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
@@ -85,10 +86,12 @@ public sealed class AudienceAccountTests
             .PersonalPoints[question.Id]);
     }
 
-    [Fact]
-    public async Task Failed_logins_are_atomically_locked_across_clients_and_expire_without_revoking_existing_sessions()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Failed_logins_are_atomically_locked_across_clients_and_expire_without_revoking_existing_sessions(bool cosmos)
     {
-        await using var site = new Site();
+        await using var site = new Site(cosmos);
         using var registered = await site.Client();
         await Token(registered);
         (await registered.PostAsJsonAsync("/api/account/register", new AccountInput("winter", Password))).EnsureSuccessStatusCode();
@@ -105,6 +108,25 @@ public sealed class AudienceAccountTests
         site.Clock.Now = site.Clock.Now.AddMinutes(16);
         (await fresh.PostAsJsonAsync("/api/account/login", new AccountInput("winter", Password))).EnsureSuccessStatusCode();
         Assert.True((await Token(fresh)).GetProperty("canVote").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Cosmos_account_store_uses_the_event_partition_and_rejects_duplicate_and_stale_writes()
+    {
+        const string eventId = "test-event";
+        var items = new MemoryCosmosAccountContainer(eventId);
+        var store = new CosmosAccountStore(items, eventId);
+        var account = new AudienceAccount { Id = AudienceAccounts.AccountId("winter"), Username = "winter" };
+
+        Assert.True(await store.Create(account, default));
+        Assert.False(await store.Create(new AudienceAccount { Id = account.Id }, default));
+        var first = (await store.Read(account.Id, default))!;
+        var second = (await store.Read(account.Id, default))!;
+        second.Account.FailedAttempts = 2;
+        Assert.True(await store.Replace(second.Account, second.Tag, default));
+        first.Account.FailedAttempts = 1;
+        Assert.False(await store.Replace(first.Account, first.Tag, default));
+        Assert.Equal(2, (await store.Read(account.Id, default))!.Account.FailedAttempts);
     }
 
     [Fact]
@@ -146,4 +168,74 @@ public sealed class AudienceAccountTests
         client.DefaultRequestHeaders.Add("X-CSRF-TOKEN", session.GetProperty("csrfToken").GetString());
         return session;
     }
+}
+
+public sealed class MemoryCosmosAccountContainer : ICosmosAccountContainer
+{
+    public const string TestEventId = "test-event";
+    private readonly object gate = new();
+    private readonly Dictionary<string, (AudienceAccount Account, long Version)> accounts = [];
+    private readonly string eventId;
+
+    public MemoryCosmosAccountContainer() : this(TestEventId) { }
+
+    public MemoryCosmosAccountContainer(string eventId) => this.eventId = eventId;
+
+    public Task<AccountRecord?> Read(string id, PartitionKey partition, CancellationToken token)
+    {
+        CheckPartition(partition);
+        lock (gate)
+        {
+            if (!accounts.TryGetValue(id, out var stored)) return Task.FromResult<AccountRecord?>(null);
+            return Task.FromResult<AccountRecord?>(new(Copy(stored.Account), stored.Version.ToString()));
+        }
+    }
+
+    public Task Create(AudienceAccount account, PartitionKey partition, CancellationToken token)
+    {
+        CheckPartition(partition);
+        lock (gate)
+        {
+            if (accounts.ContainsKey(account.Id)) throw Error(HttpStatusCode.Conflict);
+            if (account.EventId != eventId) throw new InvalidOperationException("Account event partition does not match.");
+            accounts.Add(account.Id, (Copy(account), 1));
+        }
+        return Task.CompletedTask;
+    }
+
+    public Task Replace(AudienceAccount account, string id, PartitionKey partition, string etag, CancellationToken token)
+    {
+        CheckPartition(partition);
+        lock (gate)
+        {
+            if (id != account.Id || !accounts.TryGetValue(id, out var stored) ||
+                stored.Version.ToString() != etag)
+                throw Error(HttpStatusCode.PreconditionFailed);
+            accounts[id] = (Copy(account), stored.Version + 1);
+        }
+        return Task.CompletedTask;
+    }
+
+    private void CheckPartition(PartitionKey partition)
+    {
+        if (partition != new PartitionKey(eventId))
+            throw new InvalidOperationException("Unexpected account partition key.");
+    }
+
+    private static CosmosException Error(HttpStatusCode status) =>
+        new("Simulated Cosmos conflict.", status, (int)status, "test", 0);
+
+    private static AudienceAccount Copy(AudienceAccount account) => new()
+    {
+        Id = account.Id,
+        EventId = account.EventId,
+        Kind = account.Kind,
+        UserId = account.UserId,
+        Username = account.Username,
+        PasswordHash = account.PasswordHash,
+        SecurityStamp = account.SecurityStamp,
+        FailedAttempts = account.FailedAttempts,
+        LockedUntil = account.LockedUntil,
+        Version = account.Version
+    };
 }
