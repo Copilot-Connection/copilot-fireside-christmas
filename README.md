@@ -1,8 +1,7 @@
 # Copilot Fireside Chat · Christmas edition
 
 A runnable React + ASP.NET Core application for a live Christmas panel. The audience
-sets a display name to view without signing in. **Reacting requires a self-registered
-audience username and password**; the host desk requires Microsoft Entra, the host
+sets a display name to view and react without an account; the host desk requires Microsoft Entra, the host
 tenant and an explicit application role. Designed for **Azure App Service**, not
 Static Web Apps.
 
@@ -16,17 +15,17 @@ not create an Entra application or migrate event data automatically.
   switch between Live, Questions & votes, and Panellists without leaving the page,
   with arrow/Home/End keyboard navigation. Short screens and long content scroll
   naturally; nothing is clipped to a fixed height.
-- The compact header contains the demo notice, connection status and account
+- The compact header contains the demo notice, connection status and name
   controls. Question cards are read-only, with separate Total points and Your points
-  boxes. Your points are the signed-in viewer's net +1/-1/+3 contribution, not an
+  boxes. Your points are the current browser session's net +1/-1/+3 contribution, not an
   action count or a list of other participants. Only the Live view has voting controls;
   it does not display a points total. Counts remain in Questions, Scoreboard and the host desk.
 - The default landing view uses a local copy of the user-selected December event
   poster. Hosts can upload a replacement PNG/JPEG and accessible description,
   restore the default, or select **Show landing page** to stop the discussion.
-- Name-to-view participation with a protected HTTP-only display-name cookie.
-  Names are not authentication and are not public. Viewing and SignalR remain
-  anonymous; the voting API requires a separate, server-validated audience account.
+- Name-to-vote participation with a protected HTTP-only cookie containing a random
+  session identifier. Names are not authentication and are not public. A new browser
+  or cleared cookie creates a new voting session; this is not one person per session.
 - Three repeatable actions: **Like the point** adds 1, **Don't like this point**
   subtracts 1, and **EPIC POINT!** adds 3. Scores may be negative. Every accepted
   action is a durable ledger entry; a request UUID prevents retries from scoring
@@ -113,15 +112,12 @@ dotnet run --project .\server\Fireside.csproj --launch-profile Demo
 ```
 
 Open http://127.0.0.1:5180 and http://127.0.0.1:5180/admin in separate browser
-contexts. Set an audience name, then choose **New here? Register** to create a real
-local audience account. Viewing without that step works; reaction buttons remain disabled. Choose
+contexts. Set an audience name. Choose
 **Enter demo host desk** on the admin page. Publish a question, discuss it and vote
-from the audience window after starting a speaker timer. Sign into the same audience
-account in another browser to retain its personal contribution history.
+from the audience window after starting a speaker timer.
 
 The explicit `Demo` launch profile sets Development, uses local SQLite and enables
-the labelled local host shortcut only. Audience registration uses the same password
-and cookie flow as production. Demo startup is rejected outside Development or
+the labelled local host shortcut only. Demo startup is rejected outside Development or
 when the Azure App Service `WEBSITE_INSTANCE_ID` environment variable is present.
 The sample speakers are fictional placeholders, not confirmed guests. Samples are
 seeded only with `--seed-demo` into an empty database. Re-running initialization does
@@ -154,7 +150,7 @@ dotnet publish .\server\Fireside.csproj -c Release -o .\server\bin\publish
 ```
 
 Server integration tests exercise host-tenant/role restrictions, anonymous/forged
-participant identities, malformed/personal identity rejection, cross-tenant voting,
+participant identities, cross-tenant admin rejection, exact-origin and
 CSRF enforcement, idempotent concurrent requests, repeated +1/-1/+3 actions, negative scores,
 per-identity rate limits, hidden content, revision conflicts, voting eligibility,
 image upload bounds/permissions/persistence, hidden portrait protection, speaker
@@ -162,7 +158,7 @@ assignment/deletion, authoritative timer recovery, group-mode voting rejection,
 deletion cascades, live hub reactions,
 and production demo rejection. React tests cover reaction eligibility and safe text
 rendering. Desktop and mobile Playwright scenarios use independent audience/host
-contexts to exercise public reading, explicit voter sign-in, moderation, voting,
+contexts to exercise name-only participation, moderation, voting,
 repeatable scoring, matching reactions in independent browsers, reduced motion,
 one-third-height animation end state, image upload/reset, keyboard tabs, viewport
 fit, voter denial at the host desk, speaker photo uploads/selection, separate
@@ -197,7 +193,7 @@ cross-origin cookie and authentication configuration. Azure SignalR fans out a
 data-free change event; browsers then fetch their own permitted projection.
 Transient reaction messages contain only the request ID, question ID and action
 kind, never the voter's identity or name.
-Personal point totals are derived server-side from the authenticated audience account
+Personal point totals are derived server-side from the protected audience session
 and returned only in that viewer's uncached board response; anonymous viewers receive
 no personal total. They are never included in public hub messages.
 Cosmos DB for NoSQL is mandatory outside local development/tests: local SQLite
@@ -222,29 +218,22 @@ partition to 20 GB. Images never enter core documents; oversized metadata is rej
 without committing a partial change. Configure monitoring for throttling, latency,
 document/partition size and spend; client conflicts are explicit and retryable.
 
-Audience registration uses private account documents in the existing Cosmos event
-partition (a separate table in local SQLite), never the public board/SignalR payload.
-Case-insensitive ASCII usernames use deterministic hashed document keys so concurrent
-registrations cannot create duplicates. Passwords are salted and hashed by ASP.NET Core
-Identity's PBKDF2 PasswordHasher (IdentityV3, 210,000 iterations), not custom cryptography.
-Passwords/passphrases must be 15-128 characters; usernames are 3-32 letters, numbers,
-dots, underscores or hyphens. No email, password recovery or account-linking service
-is provided. Anyone may create multiple accounts: this is not proof of one human.
+The audience cookie is protected, HTTP-only, HTTPS-only in production and SameSite
+Strict. It holds a display name and random voter ID for 30 days; changing the name
+preserves the ID. Existing display-name cookies are upgraded with a new voter ID.
+Clearing cookies or switching browsers starts another session, so rate limits and
+personal totals are per session, not per human.
 
-The independent audience cookie is HTTP-only, HTTPS-only in production, SameSite Lax,
-non-sliding and limited to two hours. Each request validates its account ID/security
-stamp against durable storage. Registration, login and logout require CSRF protection.
-Account bodies are capped at 4096 bytes, hashing concurrency is bounded, and registration/
-login share a 30-request/minute/IP/instance limit. Five failed logins atomically lock
-an account for 15 minutes across instances; successful login resets the counter.
-Existing signed-in sessions are not revoked by someone else's failed login attempts.
+Previous account records, votes, totals and event settings are retained unchanged,
+but account registration and login routes are disabled and historical account or
+Entra votes are not linked to new sessions. Back up old account documents with event
+data; the initial SQLite importer refuses a source containing accounts.
 
-New accounts receive random immutable voter IDs, with no transfer of old Entra voting
-history, even if names match. Existing votes, personal totals, adjustments and event
-settings are untouched. Back up account documents with event data; the initial SQLite
-event importer deliberately refuses a source containing accounts rather than losing them.
-No new Azure resource or service tier is required; account reads/writes consume the
-existing Cosmos allowance and password hashing uses existing App Service CPU.
+The app requires the exact configured web origin in an Origin or Referer header for
+API, authentication and hub requests, rejects cross-site fetch metadata, and retains
+CSRF checks for writes. No cross-origin CORS access is granted. These browser controls
+do not authenticate callers: non-browser clients can forge headers, and no public
+browser API can be cryptographically restricted to one web application.
 
 Host management requires the configured administrative tenant **and** `Fireside.Admin`.
 An external tenant assigning that role to its own user cannot grant host access.
@@ -267,7 +256,7 @@ After approval, an Entra administrator must:
    callback registrations can remain; the application no longer uses audience Entra.
 2. Add an app role with **value `Fireside.Admin`**, allowed member type **Users/Groups**,
    enabled. Assign only the intended host users/groups to it in Enterprise
-   applications in the host tenant. Audience accounts are independent of this registration.
+   applications in the host tenant. Audience sessions are independent of this registration.
    Merely signing in or being an Entra directory administrator does not grant access.
 3. Configure the tenant ID, client ID and a client secret outside source control.
    The confidential server performs OIDC authorization code + PKCE; the browser
@@ -349,6 +338,7 @@ existing event using the cutover procedure below; no startup seeding occurs.
 | `ASPNETCORE_ENVIRONMENT` | `Production` |
 | `Demo__Enabled` | `false` (never deploy the Demo launch profile) |
 | `AllowedHosts` | Exact public App Service/custom host names, semicolon-separated |
+| `Web__AllowedOrigin` | Optional exact HTTPS origin; defaults to `https://` plus App Service's `WEBSITE_HOSTNAME`. Configure explicitly for a custom public domain. |
 | `Database__Provider` | `Cosmos` |
 | `Cosmos__Endpoint` | HTTPS Cosmos DB for NoSQL account endpoint |
 | `Cosmos__Database` | Existing database name |
@@ -478,7 +468,7 @@ the initializer to add accounts only. It never resets votes or event content.
 Cosmos needs no schema reset, reimport or provisioning for accounts. Never rerun 006.
 Rehearse restore and compare totals before reopening writes.
 
-Before going live, verify audience registration/login/logout and administrator
+Before going live, verify audience name-only voting and administrator
 Entra sign-in, external-tenant admin-role denial,
 host-tenant role assignment, managed-identity Cosmos/Blob connectivity and
 Cosmos transactional batches, Azure SignalR fan-out across two app instances, TLS forwarding,
@@ -491,7 +481,7 @@ Operational notes:
 - `/health` is liveness, not a database/SignalR dependency readiness test.
 - Participation limits are per IP per app instance (60 writes/minute). Shared
   venue networks may need an agreed limit. Reactions are separately limited to
-  20 actions per 10 seconds per validated audience account per instance, with no
+  20 actions per 10 seconds per audience session per instance, with no
   queue. A 429 response is shown to the voter; cross-instance quotas require a
   separate design.
 - Uploaded landing artwork and published panellist photos are publicly served by the
@@ -505,7 +495,7 @@ Operational notes:
 - Successful commits remain successful if notification delivery fails; the server
   logs the failure and client reconciliation repairs missed invalidations.
 - No display names, raw Entra identifiers or Entra tokens are stored in the event/vote
-  documents; action records contain stable pseudonymous account IDs (or historical Entra hashes), not anonymous
+  documents; action records contain pseudonymous session IDs (or historical account/Entra IDs), not anonymous
   identifiers. Reactions are not a one-person-one-vote poll. Publish an
   event contact and retention policy on `/privacy` before live use; the current text
   explicitly identifies that operator-owned policy as still to be supplied.

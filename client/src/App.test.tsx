@@ -54,7 +54,7 @@ describe('Read-only question totals', () => {
 
   it('does not present an unauthenticated viewer as having contributed zero', () => {
     render(<QuestionCard question={{ ...question, myScore: null }} />);
-    expect(screen.getByText('Sign in to see')).toBeVisible();
+    expect(screen.getByText('Set a name to see')).toBeVisible();
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 });
@@ -163,6 +163,6 @@ describe('Current activity', () => {
     expect(screen.getByText('Waiting for the host')).toBeVisible();
     expect(screen.getByRole('img', { name: 'Event poster' })).toHaveAttribute('src', artwork.imageUrl);
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
-    expect(screen.getByText('Signed in and ready to vote.')).toBeVisible();
+    expect(screen.getByText('Ready to vote.')).toBeVisible();
   });
 });

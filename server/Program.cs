@@ -13,7 +13,6 @@ using System.Threading.RateLimiting;
 using Azure.Identity;
 using Azure.Storage.Blobs;
 using Microsoft.Azure.Cosmos;
-using Microsoft.AspNetCore.Http.Features;
 
 var initialize = args.Contains("--initialize-database");
 var seedDemo = args.Contains("--seed-demo");
@@ -80,9 +79,9 @@ Directory.CreateDirectory(keyPath);
 builder.Services.AddDataProtection().SetApplicationName("CopilotFiresideChristmas")
     .PersistKeysToFileSystem(new DirectoryInfo(keyPath));
 builder.Services.AddSingleton<ParticipantIdentity>();
+builder.Services.AddSingleton<BrowserOrigin>();
 builder.Services.AddSingleton<LiveUpdates>();
 builder.Services.AddSingleton(TimeProvider.System);
-builder.Services.AddSingleton<AccountPasswords>();
 builder.Services.AddAntiforgery(options =>
 {
     options.HeaderName = "X-CSRF-TOKEN";
@@ -95,16 +94,6 @@ builder.Services.AddExceptionHandler<ApiExceptionHandler>();
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
-    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
-        context.Request.Path.StartsWithSegments("/api/account")
-            ? RateLimitPartition.GetConcurrencyLimiter("account-hashing", _ => new ConcurrencyLimiterOptions
-            {
-                PermitLimit = 4, QueueLimit = 16, QueueProcessingOrder = QueueProcessingOrder.OldestFirst
-            })
-            : RateLimitPartition.GetNoLimiter("other"));
-    options.AddPolicy("accounts", context => RateLimitPartition.GetFixedWindowLimiter(
-        context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
-        _ => new FixedWindowRateLimiterOptions { PermitLimit = 30, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
     options.AddPolicy("participation", context => RateLimitPartition.GetFixedWindowLimiter(
         context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
         _ => new FixedWindowRateLimiterOptions
@@ -114,7 +103,7 @@ builder.Services.AddRateLimiter(options =>
             QueueLimit = 0
         }));
     options.AddPolicy("voting", context => RateLimitPartition.GetFixedWindowLimiter(
-        AudienceAccounts.VoterKey(context.User)?.ToString() ?? "unauthenticated",
+        context.RequestServices.GetRequiredService<ParticipantIdentity>().Read(context)?.Id.ToString() ?? "unnamed",
         _ => new FixedWindowRateLimiterOptions
         {
             PermitLimit = 20,
@@ -149,18 +138,6 @@ var auth = builder.Services.AddAuthentication(options =>
         return Task.CompletedTask;
     };
 });
-auth.AddCookie(AudienceAccounts.Scheme, options =>
-{
-    var local = builder.Environment.IsDevelopment() || builder.Environment.IsEnvironment("Testing");
-    options.Cookie.Name = local ? "fireside-audience-local" : "__Host-fireside-audience";
-    options.Cookie.SecurePolicy = local ? CookieSecurePolicy.SameAsRequest : CookieSecurePolicy.Always;
-    options.Cookie.SameSite = SameSiteMode.Lax;
-    options.ExpireTimeSpan = TimeSpan.FromHours(2);
-    options.SlidingExpiration = false;
-    options.Events.OnValidatePrincipal = AudienceAccounts.ValidateCookie;
-});
-builder.Services.AddOptions<CookieAuthenticationOptions>(AudienceAccounts.Scheme)
-    .Configure<TimeProvider>((options, clock) => options.TimeProvider = clock);
 if (demo)
 {
     // The local HTTP demo uses a different cookie, never a production authentication fallback.
@@ -215,8 +192,6 @@ builder.Services.AddAuthorization(options =>
 {
     options.AddPolicy("Admin", policy => policy.RequireAuthenticatedUser()
         .RequireAssertion(context => entra.IsAdmin(context.User)));
-    options.AddPolicy("Voter", policy => policy.RequireAuthenticatedUser()
-        .RequireAssertion(context => AudienceAccounts.VoterKey(context.User) is not null));
 });
 var signalr = builder.Services.AddSignalR(options => options.MaximumReceiveMessageSize = 4096);
 var signalrConnection = builder.Configuration.GetConnectionString("AzureSignalR");
@@ -226,6 +201,7 @@ else if (!builder.Environment.IsDevelopment() && !builder.Environment.IsEnvironm
     throw new InvalidOperationException("Production requires ConnectionStrings:AzureSignalR.");
 
 var app = builder.Build();
+_ = app.Services.GetRequiredService<BrowserOrigin>();
 if (initialize)
 {
     if (!sqlite)
@@ -252,43 +228,21 @@ app.Use(async (context, next) =>
         context.Response.Headers.CacheControl = "no-store";
     await next();
 });
-app.UseDefaultFiles();
-app.UseStaticFiles();
-app.UseRouting();
-app.UseAuthentication();
 app.Use(async (context, next) =>
 {
-    var audience = await context.AuthenticateAsync(AudienceAccounts.Scheme);
-    if (audience.Succeeded && audience.Principal is not null)
-        context.User = context.User.Identity?.IsAuthenticated == true
-            ? new ClaimsPrincipal(context.User.Identities.Concat(audience.Principal.Identities))
-            : audience.Principal;
-    if (context.Request.Path.StartsWithSegments("/api/account"))
+    if ((context.Request.Path.StartsWithSegments("/api") || context.Request.Path.StartsWithSegments("/auth") ||
+         context.Request.Path.StartsWithSegments("/live")) &&
+        !context.RequestServices.GetRequiredService<BrowserOrigin>().Allows(context.Request))
     {
-        if (context.Request.ContentLength > 4096)
-        {
-            await Results.Problem("Account requests must not exceed 4096 bytes.", statusCode: 413).ExecuteAsync(context);
-            return;
-        }
-        if (context.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } size)
-            size.MaxRequestBodySize = 4096;
-        var buffer = new byte[4097];
-        var length = await context.Request.Body.ReadAtLeastAsync(buffer, buffer.Length,
-            throwOnEndOfStream: false, context.RequestAborted);
-        if (length > 4096)
-        {
-            await Results.Problem("Account requests must not exceed 4096 bytes.", statusCode: 413).ExecuteAsync(context);
-            return;
-        }
-        var original = context.Request.Body;
-        using var bounded = new MemoryStream(buffer, 0, length, writable: false);
-        context.Request.Body = bounded;
-        try { await next(); }
-        finally { context.Request.Body = original; }
+        await Results.Problem("This request must come from the fireside app.", statusCode: 403).ExecuteAsync(context);
         return;
     }
     await next();
 });
+app.UseDefaultFiles();
+app.UseStaticFiles();
+app.UseRouting();
+app.UseAuthentication();
 app.UseAuthorization();
 app.UseRateLimiter();
 app.Use(async (context, next) =>
@@ -306,18 +260,21 @@ app.Use(async (context, next) =>
     await next();
 });
 app.MapGet("/api/session", (HttpContext context, IAntiforgery csrf, ParticipantIdentity identities) =>
-    Results.Ok(new
+{
+    var participant = identities.Read(context);
+    if (participant is { Id: var id } && id == Guid.Empty)
+        participant = identities.Set(context, participant.Name);
+    return Results.Ok(new
     {
-        participantName = identities.Read(context)?.Name,
+        participantName = participant?.Name,
         isAdmin = entra.IsAdmin(context.User),
-        canVote = AudienceAccounts.VoterKey(context.User) is not null,
+        canVote = participant is not null && participant.Id != Guid.Empty,
         signedIn = context.User.Identity?.IsAuthenticated == true,
-        audienceUsername = AudienceAccounts.Identity(context.User)?.Name,
-        adminName = context.User.Identities.FirstOrDefault(i =>
-            i.IsAuthenticated && i.AuthenticationType != AudienceAccounts.Scheme)?.Name,
+        adminName = context.User.Identity?.Name,
         demo,
         csrfToken = csrf.GetAndStoreTokens(context).RequestToken
-    }));
+    });
+});
 app.MapPut("/api/participant", (NameInput input, HttpContext context, ParticipantIdentity identities) =>
 {
     var name = input.Name?.Trim();
@@ -328,8 +285,6 @@ app.MapPut("/api/participant", (NameInput input, HttpContext context, Participan
 app.MapGet("/auth/login", (string? destination) => destination != "admin" || demo
     ? Results.Redirect(destination == "admin" ? "/admin" : "/")
     : Results.Challenge(new AuthenticationProperties { RedirectUri = "/admin" }, [adminScheme]));
-app.MapPost("/auth/logout", () => Results.SignOut(
-    new AuthenticationProperties { RedirectUri = "/" }, [AudienceAccounts.Scheme]));
 app.MapPost("/auth/admin-logout", () => Results.SignOut(
     new AuthenticationProperties { RedirectUri = "/" },
     demo ? [CookieAuthenticationDefaults.AuthenticationScheme] :
@@ -350,7 +305,6 @@ if (demo)
     }
     app.MapPost("/auth/demo-admin", (HttpContext context) => DemoSignIn(context));
 }
-app.MapAudienceAccounts();
 app.MapFiresideApi();
 app.MapHub<LiveHub>("/live");
 app.MapGet("/health", () => Results.Ok(new { status = "ok",

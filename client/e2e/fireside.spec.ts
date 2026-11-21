@@ -103,15 +103,6 @@ async function hostDesk(page: Page) {
   await expect(page.getByRole('heading', { name: 'Keep the conversation glowing.' })).toBeVisible();
 }
 
-async function signInAudience(page: Page, username = `guest-${randomUUID().slice(0, 20)}`, register = true) {
-  if (register) await page.getByRole('button', { name: 'New here? Register' }).click();
-  await page.getByLabel('Username', { exact: true }).fill(username);
-  await page.getByLabel('Password', { exact: true }).fill('Browser test winter passphrase!');
-  await page.getByRole('button', { name: register ? 'Create account & sign in' : 'Sign in', exact: true }).click();
-  await expect(page.locator('.site-header').getByRole('button', { name: `Sign out (${username})`, exact: true })).toBeVisible();
-  return username;
-}
-
 async function adminWrite(host: Page, url: string, method: string, data?: unknown) {
   const board: Board = await (await host.request.get('/api/admin/board')).json();
   const session = await (await host.request.get('/api/session')).json();
@@ -120,16 +111,15 @@ async function adminWrite(host: Page, url: string, method: string, data?: unknow
   expect(response.ok(), await response.text()).toBe(true);
 }
 
-test('registered audiences cannot react after speaker expiry or host stop', async ({ browser, page }) => {
-  const hostContext = await browser.newContext();
+test('named audiences cannot react after speaker expiry or host stop', async ({ browser, page, baseURL }) => {
+  const hostContext = await browser.newContext({ extraHTTPHeaders: { Origin: new URL(baseURL!).origin } });
   const host = await hostContext.newPage();
   await hostDesk(host);
   const original: Board = await (await host.request.get('/api/admin/board')).json();
   let questionId: string | null = null;
   try {
-    await join(page, 'Account timer viewer');
-    await signInAudience(page);
-    const text = `Account timer boundary ${Date.now()}`;
+    await join(page, 'Timer viewer');
+    const text = `Timer boundary ${Date.now()}`;
     await adminWrite(host, '/api/admin/questions', 'POST', { text, category: 'Browser test only',
       visible: true, answered: false, sortOrder: 9999, speakerId: original.panellists.find(p => p.visible)!.id });
     const created: Board = await (await host.request.get('/api/admin/board')).json();
@@ -152,7 +142,7 @@ test('registered audiences cannot react after speaker expiry or host stop', asyn
     expect((await vote()).status()).toBe(409);
     await expect(page.locator('.current-question output')).toHaveCount(0);
     await page.reload();
-    await expect(page.locator('.site-header').getByRole('button', { name: /^Sign out/ })).toBeVisible();
+    await expect(page.locator('.site-header').getByRole('button', { name: /Hi, Timer viewer/ })).toBeVisible();
     await expect(like).toBeDisabled();
   } finally {
     if (questionId) await adminWrite(host, `/api/admin/questions/${questionId}`, 'DELETE');
@@ -162,7 +152,7 @@ test('registered audiences cannot react after speaker expiry or host stop', asyn
   }
 });
 
-test('repeatable scores and matching transient reactions reach independent browsers', async ({ browser, page }) => {
+test('repeatable scores and matching transient reactions reach independent browsers', async ({ browser, page, baseURL }) => {
   test.setTimeout(90000);
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -170,11 +160,9 @@ test('repeatable scores and matching transient reactions reach independent brows
   await expect(page.getByRole('tab', { name: 'Live', exact: true })).toHaveAttribute('aria-selected', 'true');
   await page.getByRole('tab', { name: 'Questions & votes' }).click();
   await expect(page.locator('.question-card button')).toHaveCount(0);
-  await expect(page.locator('.personal-points').first()).toHaveText('Sign in to see');
+  await expect(page.locator('.personal-points').first()).toHaveText('0');
   await page.getByRole('tab', { name: 'Live', exact: true }).click();
-  const username = await signInAudience(page);
-
-  const hostContext = await browser.newContext();
+  const hostContext = await browser.newContext({ extraHTTPHeaders: { Origin: new URL(baseURL!).origin } });
   const host = await hostContext.newPage();
   await hostDesk(host);
   const initial: Board = await (await host.request.get('/api/admin/board')).json();
@@ -202,10 +190,9 @@ test('repeatable scores and matching transient reactions reach independent brows
   const live = page.locator('.current-question');
   await expect(live).toContainText(questionText);
 
-  const secondContext = await browser.newContext({ reducedMotion: 'reduce' });
+  const secondContext = await browser.newContext({ reducedMotion: 'reduce', extraHTTPHeaders: { Origin: new URL(baseURL!).origin } });
   const second = await secondContext.newPage();
-  await join(second, 'Another browser, same account');
-  await signInAudience(second, username, false);
+  await join(second, 'Another browser');
   const secondLive = second.locator('.current-question');
   await expect(secondLive).toContainText(questionText);
   const secondCard = second.locator('.question-card').filter({ hasText: questionText });
@@ -229,7 +216,7 @@ test('repeatable scores and matching transient reactions reach independent brows
     await expect(secondLive.locator('output')).toHaveCount(0);
     await expect(firstCard.locator('.total-points')).toHaveText(String(action.score));
     await expect(firstCard.locator('.personal-points')).toHaveText(String(action.score));
-    await expect(secondCard.locator('.personal-points')).toHaveText(String(action.score));
+    await expect(secondCard.locator('.personal-points')).toHaveText('0');
     expect((await observed(second)).find(item => item.id === id)!.animation).toBe('none');
     if (index === 0) {
       const end = reaction.end!;
@@ -246,11 +233,11 @@ test('repeatable scores and matching transient reactions reach independent brows
   await expect(live.getByRole('button', { name: `Like the point: ${questionText}` })).toBeEnabled();
   await page.getByRole('tab', { name: 'Questions & votes' }).click();
   await expect(firstCard.locator('.total-points')).toHaveText('7');
-  await expect(firstCard.locator('.personal-points')).toHaveText('7');
+  await expect(firstCard.locator('.personal-points')).toHaveText('4');
   await expect(firstCard.getByRole('button')).toHaveCount(0);
   await second.goto('/admin');
   await expect(second.getByRole('button', { name: 'Enter demo host desk' })).toBeVisible();
-  expect((await second.request.get('/api/admin/board')).status()).toBe(403);
+  expect((await second.request.get('/api/admin/board')).status()).toBe(401);
   await secondContext.close();
 
   await page.getByRole('tab', { name: 'Live', exact: true }).click();
@@ -273,7 +260,7 @@ test('repeatable scores and matching transient reactions reach independent brows
   await page.getByRole('button', { name: 'Answered', exact: true }).click();
   await expect(page.getByRole('heading', { name: questionText })).toBeVisible();
   await expect(firstCard.getByRole('button')).toHaveCount(0);
-  await expect(firstCard.locator('.personal-points')).toHaveText('7');
+  await expect(firstCard.locator('.personal-points')).toHaveText('4');
 
   const personName = `Sample browser panellist ${Date.now()}`;
   await host.getByRole('button', { name: 'Add panellist', exact: true }).click();
@@ -296,8 +283,8 @@ test('repeatable scores and matching transient reactions reach independent brows
   await hostContext.close();
 });
 
-test('local default artwork, durable host uploads and keyboard tabs stay on the same page', async ({ browser, page }) => {
-  const hostContext = await browser.newContext();
+test('local default artwork, durable host uploads and keyboard tabs stay on the same page', async ({ browser, page, baseURL }) => {
+  const hostContext = await browser.newContext({ extraHTTPHeaders: { Origin: new URL(baseURL!).origin } });
   const host = await hostContext.newPage();
   await hostDesk(host);
   const showLanding = host.getByRole('button', { name: 'Show landing page', exact: true });
@@ -346,20 +333,19 @@ test('local default artwork, durable host uploads and keyboard tabs stay on the 
   await hostContext.close();
 });
 
-test('hosts assign uploaded speaker portraits and synchronise speaker and non-voting group timers', async ({ browser, page }) => {
+test('hosts assign uploaded speaker portraits and synchronise speaker and non-voting group timers', async ({ browser, page, baseURL }) => {
   test.setTimeout(60000);
-  const hostContext = await browser.newContext();
+  const hostContext = await browser.newContext({ extraHTTPHeaders: { Origin: new URL(baseURL!).origin } });
   const host = await hostContext.newPage();
   host.setDefaultTimeout(10000);
   await hostDesk(host);
   const original: Board = await (await host.request.get('/api/admin/board')).json();
-  const secondContext = await browser.newContext();
+  const secondContext = await browser.newContext({ extraHTTPHeaders: { Origin: new URL(baseURL!).origin } });
   const second = await secondContext.newPage();
   let personId: string | null = null;
   let questionId: string | null = null;
   try {
     await join(page, 'Speaker timer viewer');
-    await signInAudience(page);
     await join(second, 'Independent timer viewer');
     await host.getByRole('button', { name: 'Edit timer lengths' }).click();
     await host.getByLabel('Speaker timer (seconds)', { exact: true }).fill('30');
@@ -466,10 +452,10 @@ test('hosts assign uploaded speaker portraits and synchronise speaker and non-vo
   }
 });
 
-test('host score edits persist and scoreboard visibility updates independent viewers live', async ({ browser, page }, testInfo) => {
+test('host score edits persist and scoreboard visibility updates independent viewers live', async ({ browser, page, baseURL }, testInfo) => {
   test.setTimeout(60000);
-  const hostContext = await browser.newContext();
-  const secondContext = await browser.newContext();
+  const hostContext = await browser.newContext({ extraHTTPHeaders: { Origin: new URL(baseURL!).origin } });
+  const secondContext = await browser.newContext({ extraHTTPHeaders: { Origin: new URL(baseURL!).origin } });
   const host = await hostContext.newPage();
   host.setDefaultTimeout(10000);
   const second = await secondContext.newPage();

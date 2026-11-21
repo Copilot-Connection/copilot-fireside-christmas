@@ -7,7 +7,6 @@ import { useBoard } from './useBoard';
 import { Admin } from './Admin';
 import { ReactionButtons, ReactionOverlay } from './Reactions';
 import { Scoreboard } from './Scoreboard';
-import { AudienceLogin } from './AudienceLogin';
 
 export function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -98,8 +97,8 @@ function NameForm({ session, onSaved, initial = '' }: { session: Session; onSave
       </button>
     </div>
     {error && <ErrorNotice message={error} />}
-    <p className="fine-print">No account needed to view. To react, register or sign in with your audience username and password.
-      An essential cookie remembers your display name for 30 days; your name is not public.</p>
+    <p className="fine-print">Your name is all you need to participate. An essential cookie remembers it and your
+      voting session for 30 days; your name is not public.</p>
   </form>;
 }
 
@@ -170,11 +169,7 @@ export function Audience({ session, refreshSession }: { session: Session; refres
       <span className={`connection ${connection === 'Live' ? 'connected' : ''}`} role="status">
         <span className="status-dot" /> {connection === 'Live' ? 'Connected to the fireside' : connection}
       </span>
-      <div className="audience-account"><button className="text-button" onClick={() => setEditName(!editName)}>Hi, {session.participantName} <span>Change name</span></button>
-        {session.canVote && <form action="/auth/logout" method="post">
-          <input type="hidden" name="__RequestVerificationToken" value={session.csrfToken} />
-          <button className="text-button" type="submit">Sign out{session.audienceUsername ? ` (${session.audienceUsername})` : ''}</button>
-        </form>}</div>
+      <div className="audience-account"><button className="text-button" onClick={() => setEditName(!editName)}>Hi, {session.participantName} <span>Change name</span></button></div>
     </div>}>
     <ReactionOverlay reactions={reactions} />
     {editName && <div className="name-edit"><NameForm session={session} initial={session.participantName ?? ''}
@@ -200,14 +195,11 @@ export function Audience({ session, refreshSession }: { session: Session; refres
       speaker={board.panellists.find(person => person.id === current?.speakerId)}
       groupDiscussion={board.groupDiscussion} timer={board}
       imageUrl={board.landingImageUrl} imageDescription={board.landingImageDescription}
-      pending={pending !== null} onReact={kind => { if (current) void vote(current.id, kind); }}>
-      {!session.canVote && <AudienceLogin session={session} onSignedIn={refreshSession} />}
-    </CurrentActivity>
+      pending={pending !== null} onReact={kind => { if (current) void vote(current.id, kind); }} />
     </div>
     {voteError && <ErrorNotice message={voteError} />}
     <section className="tab-panel questions-section" role="tabpanel" id="panel-questions" aria-labelledby="tab-questions" hidden={activeView !== 'questions'}>
         <div className="queue-heading"><h2>Questions &amp; points</h2><span className="voting-state">{board.groupDiscussion ? 'Group discussion' : board.votingOpen ? 'Voting open' : 'Voting paused'}</span></div>
-        {!session.canVote && <p className="section-description">Register or sign in on the Live tab to see your points and react while the current speaker's timer is running.</p>}
         <div className="tabs" aria-label="Filter questions">
           <button aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>Open questions <span>{board.questions.filter(q => !q.answered).length}</span></button>
           <button aria-pressed={filter === 'answered'} onClick={() => setFilter('answered')}>Answered <Check size={14} aria-hidden="true" /></button>
@@ -248,7 +240,7 @@ export function CurrentActivity({ question, imageUrl, imageDescription, votingOp
     <LandingArtwork source={imageUrl} description={imageDescription} />
     <div className="landing-controls">
       <div className="activity-meta"><span><Radio size={17} aria-hidden="true" />Waiting for the host</span></div>
-      {canVote ? <p className="ready-note"><Check size={16} aria-hidden="true" /> Signed in and ready to vote.</p> : children}
+      {canVote ? <p className="ready-note"><Check size={16} aria-hidden="true" /> Ready to vote.</p> : children}
     </div>
   </section>;
   return <section className="activity-stage current-question" aria-labelledby="activity-title">
@@ -296,7 +288,7 @@ export function QuestionCard({ question }: { question: Question }) {
     <dl className="question-points">
       <div><dt>Total points</dt><dd className="total-points" aria-live="polite">{question.score}</dd></div>
       <div><dt>Your points</dt><dd className={`personal-points ${question.myScore === null ? 'score-unavailable' : ''}`}
-        aria-live="polite">{question.myScore ?? 'Sign in to see'}</dd></div>
+        aria-live="polite">{question.myScore ?? 'Set a name to see'}</dd></div>
     </dl>
   </article>;
 }
@@ -308,22 +300,20 @@ export function Surface({ title, children }: { title: string; children: ReactNod
 export function Privacy() {
   return <article className="privacy-page">
     <h1>Privacy &amp; participation</h1>
-    <p>You don't need an account to view the audience page. Set a display name to enter.
-      Sending reactions requires a registered audience username and password.
-      Your display name is stored in a protected, HTTP-only essential cookie, not in the vote database or a public attendee list.</p>
-    <h2>What we store</h2><p>The display-name cookie lasts 30 days. When you sign in, a separate protected authentication
-      cookie holds identity claims for up to two hours. Each accepted reaction stores its question, score change,
-      request identifier and a random, stable audience account identifier. Account records hold your username,
-      a salted PBKDF2 password hash and failed-sign-in/lockout state, never your plaintext password.
-      Older reactions retain their existing pseudonymous Entra identifiers; they are not linked to new accounts.
-      This is personal data, not anonymous data. There is no self-service password reset.</p>
+    <p>Set a display name to enter and react; no audience account is required.
+      Your name is stored in a protected, HTTP-only essential cookie, not in the vote database or a public attendee list.</p>
+    <h2>What we store</h2><p>The cookie lasts 30 days and contains a random voting-session identifier.
+      Each accepted reaction stores its question, score change, request identifier and that pseudonymous identifier.
+      Changing your name keeps your session, but clearing the cookie or using another browser starts a new session.
+      Previous account and vote records remain stored and are not linked to your new session. This is personal data,
+      not anonymous data. A cookie cannot guarantee one session per person.</p>
     <h2>Repeatable reactions</h2><p>You can react repeatedly while voting is open: likes add 1 point, dislikes subtract
-      1 and epic points add 3. Short per-account rate limits protect the live experience. A festive animation is
+      1 and epic points add 3. Short per-session rate limits protect the live experience. A festive animation is
       broadcast without your name or identity; old animations are not replayed after reconnecting.
       Reactions are accepted only while the current speaker's timer is running, never during group discussion.</p>
     <h2>Administrators</h2><p>The host desk requires both the configured host tenant and an explicitly assigned
       Fireside.Admin application role. A role assigned in another tenant does not grant host access.
-      Microsoft handles administrator sign-in only. Audience accounts cannot grant administrator access.</p>
+      Microsoft handles administrator sign-in only. Audience sessions cannot grant administrator access.</p>
     <h2>Retention and support</h2><p>Event hosts control the questions and vote records and must publish their contact
       and event retention policy before going live. Removing a question also removes its reactions. Uploaded landing
       artwork and its description are public; hosts should remove private metadata before uploading.
