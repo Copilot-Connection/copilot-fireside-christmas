@@ -49,7 +49,7 @@ public sealed class BoardTests
         using var client = await site.Client();
         var board = (await client.GetFromJsonAsync<BoardView>("/api/board"))!;
         var id = board.Questions[0].Id;
-        Assert.Equal(HttpStatusCode.Unauthorized, (await React(client, id)).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await React(client, id)).StatusCode);
         await Token(client);
         Assert.Equal(HttpStatusCode.Unauthorized, (await React(client, id)).StatusCode);
         client.DefaultRequestHeaders.Add("Cookie", "__Host-fireside-participant=forged; fireside-participant=forged");
@@ -59,13 +59,11 @@ public sealed class BoardTests
         Assert.Equal(HttpStatusCode.BadRequest, (await client.PutAsJsonAsync("/api/participant", new NameInput(" \n "))).StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, (await client.PutAsJsonAsync("/api/participant", new NameInput("a\u0001b"))).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await client.PutAsJsonAsync("/api/participant", new NameInput("<script>alert(1)</script>"))).StatusCode);
-        Assert.Equal(HttpStatusCode.Unauthorized, (await React(client, id)).StatusCode);
-        client.DefaultRequestHeaders.Add("X-Test-Role", "Attendee");
         client.DefaultRequestHeaders.Remove("X-CSRF-TOKEN");
         Assert.Equal(HttpStatusCode.BadRequest, (await React(client, id)).StatusCode);
         await Token(client);
         Assert.Equal(HttpStatusCode.NoContent, (await React(client, id)).StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync("/api/admin/questions",
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/api/admin/questions",
             new { text = "unauthorized", visible = true, isAdmin = true })).StatusCode);
     }
 
@@ -102,8 +100,8 @@ public sealed class BoardTests
         (await React(otherIdentity, question.Id, "dislike")).EnsureSuccessStatusCode();
         Assert.Equal(4, (await client.GetFromJsonAsync<BoardView>("/api/board"))!.Questions[0].Score);
         Assert.Equal(HttpStatusCode.Conflict, (await React(otherIdentity, question.Id, requestId: requestId)).StatusCode);
-        Assert.Equal(5, (await client.GetFromJsonAsync<BoardView>("/api/board"))!.Questions[0].MyScore);
-        Assert.Equal(5, (await secondBrowser.GetFromJsonAsync<BoardView>("/api/board"))!.Questions[0].MyScore);
+        Assert.Equal(4, (await client.GetFromJsonAsync<BoardView>("/api/board"))!.Questions[0].MyScore);
+        Assert.Equal(1, (await secondBrowser.GetFromJsonAsync<BoardView>("/api/board"))!.Questions[0].MyScore);
         Assert.Equal(-1, (await otherIdentity.GetFromJsonAsync<BoardView>("/api/board"))!.Questions[0].MyScore);
         using var anonymous = await site.Client();
         var publicQuestion = (await anonymous.GetFromJsonAsync<BoardView>("/api/board"))!.Questions[0];
@@ -192,6 +190,7 @@ public sealed class BoardTests
         {
             options.HttpMessageHandlerFactory = _ => site.Server.CreateHandler();
             options.Transports = Microsoft.AspNetCore.Http.Connections.HttpTransportType.LongPolling;
+            options.Headers["Origin"] = "https://localhost";
         }).Build();
         var notified = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         hub.On("boardChanged", () => notified.TrySetResult());
@@ -218,9 +217,9 @@ public sealed class BoardTests
         Assert.False(session.GetProperty("canVote").GetBoolean());
         Assert.Equal(HttpStatusCode.Forbidden, (await external.GetAsync("/api/admin/board")).StatusCode);
         var question = (await external.GetFromJsonAsync<BoardView>("/api/board"))!.Questions[0];
-        Assert.Equal(HttpStatusCode.Forbidden, (await React(external, question.Id)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await React(external, question.Id)).StatusCode);
         (await external.PutAsJsonAsync("/api/participant", new NameInput("Guest from another organisation"))).EnsureSuccessStatusCode();
-        Assert.Equal(HttpStatusCode.Forbidden, (await React(external, question.Id)).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await React(external, question.Id)).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await external.PostAsJsonAsync("/api/admin/questions",
             new QuestionInput("Cannot publish", "", true, false, 0))).StatusCode);
     }
@@ -237,7 +236,7 @@ public sealed class BoardTests
         client.DefaultRequestHeaders.Add("X-Test-ObjectId", person);
         await Token(client);
         var question = (await client.GetFromJsonAsync<BoardView>("/api/board"))!.Questions[0];
-        Assert.Equal(HttpStatusCode.Forbidden, (await React(client, question.Id)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await React(client, question.Id)).StatusCode);
     }
 
     [Fact]
@@ -683,6 +682,7 @@ public sealed class BoardTests
     {
         options.HttpMessageHandlerFactory = _ => site.Server.CreateHandler();
         options.Transports = Microsoft.AspNetCore.Http.Connections.HttpTransportType.LongPolling;
+        options.Headers["Origin"] = "https://localhost";
     }).Build();
 
     private static async Task Token(HttpClient client)
@@ -707,6 +707,7 @@ public sealed class Site(bool cosmos = false, bool activeDiscussion = true) : We
         builder.UseSetting("ConnectionStrings:Fireside", $"Data Source={Path.Combine(directory, "test.db")};Pooling=False;Default Timeout=10");
         builder.UseSetting("DataProtection:KeyPath", Path.Combine(directory, "keys"));
         builder.UseSetting("AzureAd:TenantId", EntraIdentity.DemoTenant);
+        builder.UseSetting("Web:AllowedOrigin", "https://localhost");
         builder.ConfigureServices(services =>
         {
             if (cosmos)
@@ -733,6 +734,7 @@ public sealed class Site(bool cosmos = false, bool activeDiscussion = true) : We
     public async Task<HttpClient> Client(string? role = null)
     {
         var client = CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = new Uri("https://localhost"), AllowAutoRedirect = false });
+        client.DefaultRequestHeaders.Add("Origin", "https://localhost");
         if (role is not null) client.DefaultRequestHeaders.Add("X-Test-Role", role);
         if (!initialized)
         {

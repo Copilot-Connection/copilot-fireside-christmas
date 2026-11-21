@@ -10,7 +10,7 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ? body.detail : response.status === 401 ? 'Your session ended. Refresh this page to sign in or set your name again.'
         : response.status === 403 ? path.startsWith('/api/admin')
           ? 'This account does not have host access. Ask your Entra administrator for the Fireside.Admin role.'
-          : 'Sign in with an audience account to vote. Your audience session may have ended.'
+          : 'Set your name to vote. Your audience session may have ended.'
         : response.status === 429 ? 'Too many requests. Please wait a minute and try again.'
         : `Unable to complete that request (${response.status}). Please retry.`;
     throw new ApiError(response.status, detail);

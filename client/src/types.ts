@@ -21,5 +21,5 @@ export type SpeakerTotal = { id: string; name: string; points: number; removed: 
 export type Scoreboard = { speakers: SpeakerTotal[]; questions: QuestionScores[] };
 export type Session = {
   participantName: string | null; isAdmin: boolean; signedIn: boolean; canVote: boolean;
-  adminName: string | null; audienceUsername?: string | null; demo: boolean; csrfToken: string;
+  adminName: string | null; demo: boolean; csrfToken: string;
 };

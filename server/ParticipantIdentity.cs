@@ -24,7 +24,9 @@ public sealed class ParticipantIdentity(IDataProtectionProvider provider, IWebHo
 
     public Participant Set(HttpContext context, string name)
     {
-        var participant = new Participant(name, DateTimeOffset.UtcNow.AddDays(30));
+        var existing = Read(context);
+        var participant = new Participant(name, DateTimeOffset.UtcNow.AddDays(30),
+            existing is { Id: var id } && id != Guid.Empty ? id : Guid.NewGuid());
         context.Response.Cookies.Append(cookieName, protector.Protect(JsonSerializer.Serialize(participant)),
             new CookieOptions
             {
