@@ -9,7 +9,7 @@ import { Scoreboard } from './Scoreboard';
 
 type PersonDraft = Omit<Panellist, 'id' | 'photoUrl'>;
 type QuestionDraft = Omit<Question, 'id' | 'score' | 'myScore'>;
-const emptyPerson: PersonDraft = { name: '', role: '', bio: '', visible: false, sortOrder: 0 };
+const emptyPerson: PersonDraft = { name: '', role: '', type: 'guest', bio: '', visible: false, sortOrder: 0 };
 const emptyQuestion: QuestionDraft = { text: '', category: '', visible: false, answered: false, sortOrder: 0, speakerId: null, speakerIds: [] };
 
 export function Admin({ session, refreshSession }: { session: Session; refreshSession: () => Promise<void> }) {
@@ -146,6 +146,10 @@ export function Admin({ session, refreshSession }: { session: Session; refreshSe
         <button disabled={pending} onClick={() => void mutation('/api/admin/scoreboard', 'PUT', { visible: !board.scoreboardVisible })}>
           {board.scoreboardVisible ? 'Hide scoreboard' : 'Show scoreboard'}</button>
       </div>
+      <button className="danger-button" disabled={pending} onClick={() => {
+        if (confirm('Reset all scores, including everyone’s personal points? Historical reactions will be retained.'))
+          void mutation('/api/admin/scores/reset', 'POST');
+      }}>Reset scores</button>
       <p className="section-description">Reactions belong to the speaker active when they were cast. Edits record an adjustment, never change individual votes.
         New reactions continue to add to the adjusted score.</p>
       {scoreEdit && <form className="editor-form score-edit-form" onSubmit={async event => {
@@ -289,6 +293,11 @@ export function Admin({ session, refreshSession }: { session: Session; refreshSe
             onChange={event => setEditingPerson({ ...editingPerson, draft: { ...editingPerson.draft, name: event.target.value } })} /></label>
           <label>Role / introduction<input maxLength={120} value={editingPerson.draft.role}
             onChange={event => setEditingPerson({ ...editingPerson, draft: { ...editingPerson.draft, role: event.target.value } })} /></label>
+          <label>Panellist type<select value={editingPerson.draft.type}
+            onChange={event => setEditingPerson({ ...editingPerson, draft: { ...editingPerson.draft,
+              type: event.target.value === 'host' ? 'host' : 'guest' } })}>
+            <option value="guest">Guest</option><option value="host">Host</option>
+          </select></label>
           <label>Short bio<textarea maxLength={500} value={editingPerson.draft.bio}
             onChange={event => setEditingPerson({ ...editingPerson, draft: { ...editingPerson.draft, bio: event.target.value } })} /></label>
           <label>Display order<input type="number" min={0} max={10000} required value={editingPerson.draft.sortOrder}
@@ -299,7 +308,7 @@ export function Admin({ session, refreshSession }: { session: Session; refreshSe
           {editingPerson.revision !== board.revision && <p className="fine-print">The board changed while you were editing. Cancel and reopen to edit the latest version.</p>}
         </form>}
         <div className="admin-list">{board.panellists.map(person => <article key={person.id}>
-          <div className="question-tags"><span>{person.visible ? 'Published' : 'Hidden'}</span><span>Order {person.sortOrder}</span></div>
+          <div className="question-tags"><span>{person.visible ? 'Published' : 'Hidden'}</span><span>{person.type === 'host' ? 'Host' : 'Guest'}</span><span>Order {person.sortOrder}</span></div>
           <h3>{person.name}</h3><p>{person.role}</p><p className="fine-print">{person.bio}</p>
           {person.photoUrl && <PanellistPhoto person={person} />}
           <div className="action-row">

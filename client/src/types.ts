@@ -1,5 +1,5 @@
 export type Panellist = {
-  id: string; name: string; role: string; bio: string; visible: boolean; sortOrder: number; photoUrl: string | null;
+  id: string; name: string; role: string; type: 'guest' | 'host'; bio: string; visible: boolean; sortOrder: number; photoUrl: string | null;
 };
 export type Question = {
   id: string; text: string; category: string; visible: boolean; answered: boolean;

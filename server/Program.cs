@@ -209,6 +209,7 @@ if (initialize)
     await DatabaseSetup.Initialize(app.Services, seedDemo);
     return;
 }
+if (sqlite) await DatabaseSetup.UpgradeSqlite(app.Services);
 app.UseForwardedHeaders();
 app.UseExceptionHandler();
 if (!app.Environment.IsDevelopment() && !app.Environment.IsEnvironment("Testing"))

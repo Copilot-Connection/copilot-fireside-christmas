@@ -56,6 +56,13 @@ public static class Api
             Results.Ok(EventViews.Snapshot(await store.Read(null, token), true, clock)));
         admin.MapPut("/scoreboard", async (ScoreboardInput input, HttpContext context, IEventStore store, LiveUpdates live) =>
             await Mutate(context, store, live, data => { data.Board.ScoreboardVisible = input.Visible; return null; }));
+        admin.MapPost("/scores/reset", async (HttpContext context, IEventStore store, LiveUpdates live) =>
+            await Mutate(context, store, live, data =>
+            {
+                data.Board.ScoreEpoch = checked(data.Board.ScoreEpoch + 1);
+                data.Scores.Clear();
+                return null;
+            }));
         admin.MapPut("/questions/{questionId:guid}/scores/{speakerId:guid}",
             async (Guid questionId, Guid speakerId, ScoreInput input, HttpContext context,
                 IEventStore store, LiveUpdates live, TimeProvider clock) =>
@@ -72,7 +79,8 @@ public static class Api
                     var delta = checked(input.Points - previous);
                     if (delta == 0) return Invalid("Enter a different total to record an adjustment.");
                     data.NewAdjustments.Add(new ScoreAdjustment { QuestionId = questionId, SpeakerId = speakerId,
-                        Delta = delta, ActorId = actor.Value, ChangedAt = clock.GetUtcNow(), Reason = input.Reason!.Trim() });
+                        Delta = delta, ScoreEpoch = data.Board.ScoreEpoch, ActorId = actor.Value,
+                        ChangedAt = clock.GetUtcNow(), Reason = input.Reason!.Trim() });
                     data.AddScore(questionId, speakerId, delta);
                     return null;
                 }));
@@ -278,7 +286,7 @@ public static class Api
                 data.Board.TimerDurationSeconds is not { } duration || now < started || now >= started.AddSeconds(duration))
                 return Results.Problem("Voting is only available while the current speaker's timer is running.", statusCode: 409);
             data.NewVotes.Add(new Vote { Id = input.RequestId, QuestionId = id,
-                ParticipantId = voter.Value, Delta = delta, SpeakerId = speaker });
+                ParticipantId = voter.Value, Delta = delta, SpeakerId = speaker, ScoreEpoch = data.Board.ScoreEpoch });
             data.AddScore(id, speaker, delta);
             data.PersonalPoints[id] = checked(data.PersonalPoints.GetValueOrDefault(id) + delta);
             return null;
@@ -368,11 +376,13 @@ public static class Api
     }
     private static bool ValidPanellist(PanellistInput input) =>
         InputRules.Text(input.Name?.Trim(), 1, 80) && InputRules.Text(input.Role?.Trim(), 0, 120) &&
-        InputRules.Text(input.Bio?.Trim(), 0, 500) && input.SortOrder is >= 0 and <= 10000;
+        InputRules.Text(input.Bio?.Trim(), 0, 500) && input.SortOrder is >= 0 and <= 10000 &&
+        input.Type is null or "guest" or "host";
     private static void Apply(Panellist person, PanellistInput input)
     {
         person.Name = input.Name!.Trim(); person.Role = input.Role!.Trim(); person.Bio = input.Bio!.Trim();
         person.Visible = input.Visible; person.SortOrder = input.SortOrder;
+        if (input.Type is not null) person.Type = input.Type;
     }
     private static void Apply(Question question, QuestionInput input)
     {

@@ -26,7 +26,7 @@ it('shows per-question and total points, with edit actions only for the host', (
 });
 
 it('uses uploaded portraits beside names and handles broken images accessibly', () => {
-  render(<Scoreboard scores={scores} people={[{ id: 's', name: 'Sample speaker', role: '', bio: '',
+  render(<Scoreboard scores={scores} people={[{ id: 's', name: 'Sample speaker', role: '', type: 'guest', bio: '',
     visible: true, sortOrder: 0, photoUrl: '/api/panellists/s/photo?v=1' }]} />);
   const portraits = screen.getAllByRole('img', { name: 'Portrait of Sample speaker' });
   expect(portraits).toHaveLength(2);
@@ -58,6 +58,28 @@ it('allows a score draft to be cleared and changed to a negative total', async (
   fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
   await waitFor(() => expect(write).toHaveBeenCalledWith('/api/admin/questions/q/scores/s', 'PUT', 'test',
     { points: -2, reason: 'Correction' }, 1));
+});
+
+it('requires confirmation before resetting all scores', async () => {
+  const board: Board = {
+    title: 'Test', subtitle: '', votingOpen: false, currentQuestionId: null, revision: 1,
+    panellists: [], questions: [], landingImageUrl: '', landingImageDescription: '',
+    hasCustomLandingImage: false, speakerSeconds: 120, groupSeconds: 300, groupDiscussion: false,
+    timerStartedAt: null, timerDurationSeconds: null, serverTime: '2026-01-01T00:00:00Z',
+    scoreboardVisible: true, scoreboard: scores,
+  };
+  const refresh = vi.fn().mockResolvedValue(undefined);
+  vi.mocked(useBoard).mockReturnValue({ board, error: '', connection: 'Live', refresh, reactions: [] });
+  const write = vi.spyOn(api, 'write').mockResolvedValue(undefined);
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
+  render(<Admin session={{ participantName: null, isAdmin: true, signedIn: true, canVote: false,
+    adminName: 'Test host', demo: true, csrfToken: 'test' }} refreshSession={refresh} />);
+  fireEvent.click(screen.getByRole('heading', { name: /Speaker scores/ }));
+  fireEvent.click(screen.getByRole('button', { name: 'Reset scores' }));
+  expect(write).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Reset scores' }));
+  expect(confirm).toHaveBeenLastCalledWith(expect.stringContaining('personal points'));
+  await waitFor(() => expect(write).toHaveBeenCalledWith('/api/admin/scores/reset', 'POST', 'test', undefined, 1));
 });
 
 it('removes a hidden scoreboard and immediately returns its viewers to Live', () => {

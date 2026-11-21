@@ -616,10 +616,52 @@ public sealed class BoardTests
         await Revision(admin);
         (await admin.DeleteAsync($"/api/admin/panellists/{first.Id}")).EnsureSuccessStatusCode();
         board = await Revision(admin);
-        Assert.True(board.Scoreboard!.Speakers.Single(s => s.Id == first.Id).Removed);
-        Assert.Equal(11, board.Scoreboard.Speakers.Single(s => s.Id == first.Id).Points);
+        Assert.DoesNotContain(board.Scoreboard!.Speakers, s => s.Id == first.Id);
+        Assert.Equal(10, board.Questions.Single(q => q.Id == question.Id).Score);
         (await admin.PutAsJsonAsync("/api/admin/scoreboard", new ScoreboardInput(false))).EnsureSuccessStatusCode();
         Assert.DoesNotContain("\"scoreboard\":", await audience.GetStringAsync("/api/board"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Scoreboard_shows_guests_only_without_discarding_host_scores(bool cosmos)
+    {
+        await using var site = new Site(cosmos);
+        using var admin = await site.Client("Fireside.Admin");
+        using var audience = await site.Client();
+        await Token(admin);
+        var board = await Revision(admin);
+        var guest = board.Panellists.Single(p => p.Visible);
+        Assert.Equal("guest", guest.Type);
+        (await admin.PostAsJsonAsync("/api/admin/panellists",
+            new PanellistInput("A host", "Moderator", "", true, 2, "host"))).EnsureSuccessStatusCode();
+        board = await Revision(admin);
+        var host = board.Panellists.Single(p => p.Name == "A host");
+        Assert.Equal("host", host.Type);
+        Assert.DoesNotContain(board.Scoreboard!.Speakers, p => p.Id == host.Id);
+        (await admin.PutAsJsonAsync($"/api/admin/panellists/{host.Id}",
+            new PanellistInput(host.Name, host.Role, host.Bio, host.Visible, host.SortOrder))).EnsureSuccessStatusCode();
+        board = await Revision(admin);
+        Assert.Equal("host", board.Panellists.Single(p => p.Id == host.Id).Type);
+        var question = board.Questions.Single(q => q.Visible);
+        (await admin.PutAsJsonAsync($"/api/admin/questions/{question.Id}/scores/{host.Id}",
+            new ScoreInput(7, "Existing host score"))).EnsureSuccessStatusCode();
+        board = await Revision(admin);
+        Assert.Equal(7, board.Questions.Single(q => q.Id == question.Id).Score);
+        Assert.DoesNotContain(board.Scoreboard!.Speakers, p => p.Id == host.Id);
+        (await admin.PutAsJsonAsync("/api/admin/scoreboard", new ScoreboardInput(true))).EnsureSuccessStatusCode();
+        var publicBoard = (await audience.GetFromJsonAsync<BoardView>("/api/board"))!;
+        Assert.Contains(publicBoard.Panellists, p => p.Id == host.Id && p.Type == "host");
+        Assert.DoesNotContain(publicBoard.Scoreboard!.Speakers, p => p.Id == host.Id);
+        Assert.All(publicBoard.Scoreboard.Questions, row => Assert.DoesNotContain(row.Scores, p => p.SpeakerId == host.Id));
+        board = await Revision(admin);
+        (await admin.PutAsJsonAsync($"/api/admin/panellists/{host.Id}",
+            new PanellistInput(host.Name, host.Role, host.Bio, host.Visible, host.SortOrder, "guest"))).EnsureSuccessStatusCode();
+        board = await Revision(admin);
+        Assert.Equal(7, board.Scoreboard!.Speakers.Single(p => p.Id == host.Id).Points);
+        Assert.Equal(HttpStatusCode.BadRequest, (await admin.PutAsJsonAsync($"/api/admin/panellists/{host.Id}",
+            new PanellistInput(host.Name, host.Role, host.Bio, host.Visible, host.SortOrder, "other"))).StatusCode);
     }
 
     [Theory]

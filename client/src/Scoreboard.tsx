@@ -29,8 +29,8 @@ export function Scoreboard({ scores, people = [], onEdit }: {
       {question.unassignedPoints !== 0 && <p className="fine-print">Unassigned points: {question.unassignedPoints}.
         No published speaker was active for these reactions.</p>}
     </section>)}
-    <p className="fine-print">Totals include host adjustments. Individual voters' contribution histories are unchanged.
-      Only published speakers and questions appear on the audience scoreboard.</p>
+    <p className="fine-print">Totals include host adjustments. Individual score edits do not change voters' points.
+      Only guests appear on the scoreboard; the audience sees published guests and questions.</p>
   </div>;
 }
 

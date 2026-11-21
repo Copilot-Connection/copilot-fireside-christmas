@@ -236,7 +236,8 @@ public sealed class MemoryCosmosDocuments : ICosmosEventDocuments
             foreach (var vote in commit.Data.NewVotes) Votes.Add(vote.Id, Copy(vote));
             Adjustments.AddRange(commit.Data.NewAdjustments.Select(Copy));
             if (commit.Voter.HasValue && commit.Data.NewVotes.Count != 0)
-                personal[commit.Voter.Value] = new(new PersonalPoints { Points = Copy(commit.Data.PersonalPoints) }, ETag);
+                personal[commit.Voter.Value] = new(new PersonalPoints { ScoreEpoch = commit.Data.Board.ScoreEpoch,
+                    Points = Copy(commit.Data.PersonalPoints) }, ETag);
             return true;
         }
     }

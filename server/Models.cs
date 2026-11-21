@@ -23,6 +23,7 @@ public sealed class Board
     public int? TimerDurationSeconds { get; set; }
     public bool ScoreboardVisible { get; set; }
     public DateTimeOffset? ScoreboardInitializedAt { get; set; } = DateTimeOffset.UtcNow;
+    public long ScoreEpoch { get; set; }
 }
 
 public sealed class Panellist
@@ -30,6 +31,7 @@ public sealed class Panellist
     public Guid Id { get; set; } = Guid.NewGuid();
     [MaxLength(80)] public string Name { get; set; } = "";
     [MaxLength(120)] public string Role { get; set; } = "";
+    [MaxLength(5)] public string Type { get; set; } = "guest";
     [MaxLength(500)] public string Bio { get; set; } = "";
     public bool Visible { get; set; }
     public int SortOrder { get; set; }
@@ -56,6 +58,7 @@ public sealed class Vote
     public Guid QuestionId { get; set; }
     public Guid ParticipantId { get; set; }
     public int Delta { get; set; }
+    public long ScoreEpoch { get; set; }
     // Attribution must survive switching or deleting the selected panellist.
     public Guid? SpeakerId { get; set; }
     public Question Question { get; set; } = null!;
@@ -67,6 +70,7 @@ public sealed class ScoreAdjustment
     public Guid QuestionId { get; set; }
     public Guid SpeakerId { get; set; }
     public long Delta { get; set; }
+    public long ScoreEpoch { get; set; }
     public Guid ActorId { get; set; }
     public DateTimeOffset ChangedAt { get; set; }
     [MaxLength(200)] public string Reason { get; set; } = "";
@@ -126,7 +130,7 @@ public sealed class FiresideDb(DbContextOptions<FiresideDb> options) : DbContext
 public sealed record Participant(string Name, DateTimeOffset Expires, Guid Id = default);
 public sealed record NameInput(string? Name);
 public sealed record BoardInput(string? Title, string? Subtitle, bool VotingOpen, Guid? CurrentQuestionId);
-public sealed record PanellistInput(string? Name, string? Role, string? Bio, bool Visible, int SortOrder);
+public sealed record PanellistInput(string? Name, string? Role, string? Bio, bool Visible, int SortOrder, string? Type = null);
 public sealed record QuestionInput(string? Text, string? Category, bool Visible, bool Answered, int SortOrder,
     Guid? SpeakerId = null, IReadOnlyList<Guid>? SpeakerIds = null);
 public sealed record SpeakerInput(Guid SpeakerId);
@@ -141,7 +145,7 @@ public sealed record QuestionView(Guid Id, string Text, string Category, bool Vi
 {
     public IReadOnlyList<Guid> SpeakerIds { get; init; } = [];
 }
-public sealed record PanellistView(Guid Id, string Name, string Role, string Bio, bool Visible, int SortOrder, string? PhotoUrl);
+public sealed record PanellistView(Guid Id, string Name, string Role, string Bio, bool Visible, int SortOrder, string? PhotoUrl, string Type);
 public sealed record BoardView(string Title, string Subtitle, bool VotingOpen, Guid? CurrentQuestionId,
     long Revision, IReadOnlyList<PanellistView> Panellists, IReadOnlyList<QuestionView> Questions,
     string LandingImageUrl, string LandingImageDescription, bool HasCustomLandingImage,

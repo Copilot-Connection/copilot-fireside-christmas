@@ -51,7 +51,7 @@ test('audience speaker and group clocks warn at 15% with a steady reduced-motion
     const board: Board = await response.json();
     await route.fulfill({ json: { ...board, currentQuestionId: questionId, groupDiscussion,
       timerStartedAt: start.toISOString(), serverTime: start.toISOString(), timerDurationSeconds: duration,
-      panellists: [...board.panellists, { id: speakerId, name: 'Sample timer speaker', role: 'Panellist',
+      panellists: [...board.panellists, { id: speakerId, name: 'Sample timer speaker', role: 'Panellist', type: 'guest',
         bio: '', visible: true, sortOrder: 0, photoUrl: null }],
       questions: [...board.questions, { id: questionId, text: 'Sample timer warning', category: 'Browser-only preview',
         visible: true, answered: false, sortOrder: 0, score: 0, myScore: null, speakerId, speakerIds: [speakerId] }],
@@ -110,6 +110,35 @@ async function adminWrite(host: Page, url: string, method: string, data?: unknow
     headers: { 'X-CSRF-TOKEN': session.csrfToken, 'If-Match': `"${board.revision}"` } });
   expect(response.ok(), await response.text()).toBe(true);
 }
+
+test('host confirms score reset and manages guest-only scoreboard', async ({ browser, baseURL }) => {
+  const context = await browser.newContext({ extraHTTPHeaders: { Origin: new URL(baseURL!).origin } });
+  const host = await context.newPage();
+  await hostDesk(host);
+  const board: Board = await (await host.request.get('/api/admin/board')).json();
+  const question = board.questions.find(q => q.visible)!;
+  await host.getByRole('heading', { name: /Speaker scores/ }).click();
+  const scorePanel = host.locator('.speaker-scores');
+  await expect(scorePanel.locator('.scoreboard')).toContainText('Sample builder');
+  await expect(scorePanel.locator('.scoreboard')).not.toContainText('Sample host');
+  await host.getByRole('button', { name: `Edit points for Sample builder: ${question.text}` }).click();
+  await host.getByLabel('Points', { exact: true }).fill('8');
+  await host.getByLabel('Reason for change').fill('Browser test');
+  await host.locator('.score-edit-form').getByRole('button', { name: 'Save changes' }).click();
+  await expect(host.getByLabel('Sample builder: 8 points')).toBeVisible();
+  host.once('dialog', dialog => dialog.dismiss());
+  await host.getByRole('button', { name: 'Reset scores' }).click();
+  await expect(host.getByLabel('Sample builder: 8 points')).toBeVisible();
+  host.once('dialog', dialog => dialog.accept());
+  await host.getByRole('button', { name: 'Reset scores' }).click();
+  await expect(host.getByLabel('Sample builder: 0 points').first()).toBeVisible();
+  const person = host.locator('.admin-list article').filter({ has: host.getByRole('heading', { name: 'Sample builder', exact: true }) });
+  await person.getByRole('button', { name: 'Edit', exact: true }).click();
+  await host.getByLabel('Panellist type').selectOption('host');
+  await host.locator('.editor-form').filter({ has: host.getByLabel('Panellist type') }).getByRole('button', { name: 'Save changes' }).click();
+  await expect(scorePanel.locator('.scoreboard')).not.toContainText('Sample builder');
+  await context.close();
+});
 
 test('named audiences cannot react after speaker expiry or host stop', async ({ browser, page, baseURL }) => {
   const hostContext = await browser.newContext({ extraHTTPHeaders: { Origin: new URL(baseURL!).origin } });

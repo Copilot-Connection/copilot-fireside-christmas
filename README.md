@@ -42,6 +42,9 @@ not create an Entra application or migrate event data automatically.
   question. The Live view shows the selected published speaker and portrait,
   including on mobile. Hidden photos stay behind the admin API; deleting a
   panellist unassigns their questions without deleting those questions or votes.
+- Each panellist is a **guest** or **host**, selectable in the host desk. Existing
+  panellists default to guest until reclassified. Both can take part in discussions,
+  but only guests appear on the scoreboard.
 - Each question has a **Select speaker** control and previous/next arrows. They
   cycle through published speakers, wrapping at either end. Selection updates the
   audience immediately and clears the previous clock; it **does not start a timer**.
@@ -54,17 +57,20 @@ not create an Entra application or migrate event data automatically.
   and their total. New reactions are permanently credited to the published speaker
   active on that question when the server accepts them; switching speakers never
   moves earlier points. Historical unassigned reactions stay unassigned; new reactions
-  require an active published speaker and running timer. Deleted speakers retain their historical attribution in
-  the host desk as “Removed speaker”; their scores are not published to audiences.
+  require an active published speaker and running timer. Deleted speakers' historical
+  attribution remains in the ledger but is no longer displayed on the scoreboard.
 - Hosts can edit a speaker/question total with a required reason. The server stores
   an additive adjustment with the actor's pseudonymous Entra key and server time,
   rather than rewriting individual votes. New reactions add to the adjusted total;
   personal contribution history remains based only on that person's reactions.
   Edits accept integer totals between -1,000,000,000 and 1,000,000,000.
+- **Reset scores** requires host confirmation and clears all question, speaker and
+  personal points at once. Historical reactions and adjustments remain in the ledger;
+  retries of old reactions cannot restore points. New reactions start the new totals.
 - The audience **Scoreboard** tab starts hidden. **Show scoreboard / Hide scoreboard**
   applies to every audience connection live. Hidden snapshots omit scoreboard data
   server-side, not just its controls. Hiding it moves viewers back to Live. Published
-  scoreboards contain only published questions and panellists.
+  scoreboards contain only published questions and guests.
   Speaker portraits appear alongside their names in totals and per-question rows,
   using the same uploaded photos as the live view.
 - Shared timer lengths default to 120 seconds for speakers and 300 for group
@@ -208,6 +214,9 @@ Votes change the internal ETag but not the host-facing revision.
 The account must use **Strong consistency**, also requested by the client, so an
 invalidation received on another App Service instance cannot fetch an older snapshot.
 Personal totals are read with a core ETag recheck for a coherent combined response.
+An atomic score generation in the event core makes resets apply to existing personal
+projections without deleting historical vote documents. New votes and adjustments
+carry the current generation, and concurrent writes retry against the current core.
 
 Single-region Serverless suits an intermittent event, but RU consumption must be
 measured before opening to the full audience. Strong reads cost more RUs, and all
@@ -389,6 +398,9 @@ resource and deployment approvals, create the empty Cosmos database/container an
 private Blob container, assign the operator's data-plane permissions, stop source
 and target writes, and take a verified source backup. Do not initialize/reseed the
 current event, repeat schema006 or delete its post-reset votes.
+The source must already have the current guest/type and score-generation columns.
+For an older SQLite snapshot, run the current local initializer on a verified copy
+before importing that copy; it adds those columns without clearing event records.
 
 The operator tool opens the SQLite source **read-only**, takes a consistent snapshot,
 checks integrity/foreign keys and validates score projections against the ledger.
@@ -438,7 +450,10 @@ dotnet run --project .\server\Fireside.csproj --launch-profile Entra -- --initia
 This explicitly creates the initial schema and an empty local event, without sample
 speakers or questions, then exits. Cosmos rejects this initializer and must use the
 verified importer instead. Database creation is not automatically performed during normal startup.
-The initializer uses EF `EnsureCreated` for this first schema. It also idempotently adds
+The initializer uses EF `EnsureCreated` for this first schema. Local SQLite startup
+idempotently adds guest/host and score-generation columns to an otherwise current
+database, preserving existing records and defaulting existing panellists to guests.
+The initializer also idempotently adds
 the isolated `007-audience-accounts.sql` table to an otherwise current local schema.
 It is **not** an upgrade system for the older board schemas below.
 

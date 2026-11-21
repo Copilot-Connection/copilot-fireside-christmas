@@ -85,7 +85,7 @@ describe('Current activity', () => {
 
   it('shows the assigned speaker portrait and an explicit image failure state', () => {
     render(<CurrentActivity {...artwork} question={question} votingOpen canVote pending={false} onReact={vi.fn()}
-      speaker={{ id: 'speaker', name: 'Sample speaker', role: 'Sample only', bio: '', visible: true, sortOrder: 0, photoUrl: '/api/panellists/speaker/photo?v=1' }} />);
+      speaker={{ id: 'speaker', name: 'Sample speaker', role: 'Sample only', type: 'guest', bio: '', visible: true, sortOrder: 0, photoUrl: '/api/panellists/speaker/photo?v=1' }} />);
     const portrait = screen.getByRole('img', { name: 'Portrait of Sample speaker' });
     expect(portrait).toHaveAttribute('src', '/api/panellists/speaker/photo?v=1');
     fireEvent.error(portrait);
@@ -122,7 +122,7 @@ describe('Current activity', () => {
     vi.setSystemTime(new Date('2026-12-16T16:00:00Z'));
     render(<CurrentActivity {...artwork} question={question} votingOpen canVote pending={false} onReact={vi.fn()}
       groupDiscussion={groupDiscussion}
-      speaker={{ id: 'speaker', name: 'Sample speaker', role: 'Panellist', bio: '', visible: true, sortOrder: 0, photoUrl: null }}
+      speaker={{ id: 'speaker', name: 'Sample speaker', role: 'Panellist', type: 'guest', bio: '', visible: true, sortOrder: 0, photoUrl: null }}
       timer={{ serverTime: '2026-12-16T16:00:00Z', timerStartedAt: '2026-12-16T16:00:00Z', timerDurationSeconds: duration }} />);
     act(() => vi.advanceTimersByTime(duration * 850 - 250));
     expect(screen.getByText('Time remaining')).toBeVisible();

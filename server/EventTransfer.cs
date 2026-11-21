@@ -66,8 +66,10 @@ public sealed class EventArchive(EventData data, IReadOnlyList<Vote> votes, IRea
             Adjustments.Any(a => a.Delta == 0 || !Data.Questions.Any(q => q.Id == a.QuestionId)))
             throw new InvalidDataException("The source ledger contains invalid or orphaned records.");
         var totals = new EventData();
-        foreach (var vote in Votes) totals.AddScore(vote.QuestionId, vote.SpeakerId, vote.Delta);
-        foreach (var adjustment in Adjustments) totals.AddScore(adjustment.QuestionId, adjustment.SpeakerId, adjustment.Delta);
+        foreach (var vote in Votes.Where(v => v.ScoreEpoch == Data.Board.ScoreEpoch))
+            totals.AddScore(vote.QuestionId, vote.SpeakerId, vote.Delta);
+        foreach (var adjustment in Adjustments.Where(a => a.ScoreEpoch == Data.Board.ScoreEpoch))
+            totals.AddScore(adjustment.QuestionId, adjustment.SpeakerId, adjustment.Delta);
         static IEnumerable<EventScore> Ordered(IEnumerable<EventScore> values) =>
             values.OrderBy(s => s.QuestionId).ThenBy(s => s.SpeakerId);
         if (!Ordered(totals.Scores).SequenceEqual(Ordered(Data.Scores)))
@@ -99,8 +101,10 @@ public sealed class EventArchive(EventData data, IReadOnlyList<Vote> votes, IRea
             .Concat(Adjustments.Select(a => new LedgerDocument { Id = $"adjustment-{a.Id:N}",
                 EventId = eventId, Kind = "adjustment", Adjustment = a })).ToArray();
 
-    public IReadOnlyList<PersonalPoints> Personal(string eventId) => Votes.GroupBy(v => v.ParticipantId)
+    public IReadOnlyList<PersonalPoints> Personal(string eventId) => Votes.Where(v => v.ScoreEpoch == Data.Board.ScoreEpoch)
+        .GroupBy(v => v.ParticipantId)
         .Select(person => new PersonalPoints { Id = $"voter-{person.Key:N}", EventId = eventId,
+            ScoreEpoch = Data.Board.ScoreEpoch,
             Points = person.GroupBy(v => v.QuestionId).ToDictionary(g => g.Key, g => g.Sum(v => (long)v.Delta)) }).ToArray();
 
     public static string Digest<T>(T value)

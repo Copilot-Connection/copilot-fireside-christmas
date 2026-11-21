@@ -113,14 +113,15 @@ public sealed class SqliteEventStore(FiresideDb db) : IEventStore
             Questions = await Query(db.Questions).OrderBy(q => q.SortOrder).ThenBy(q => q.Id).ToListAsync(token),
             Orders = await Query(db.QuestionSpeakerOrders).OrderBy(o => o.SortOrder).ThenBy(o => o.PanellistId).ToListAsync(token)
         };
-        var votes = await db.Votes.AsNoTracking().GroupBy(v => new { v.QuestionId, v.SpeakerId })
+        var epoch = data.Board.ScoreEpoch;
+        var votes = await db.Votes.AsNoTracking().Where(v => v.ScoreEpoch == epoch).GroupBy(v => new { v.QuestionId, v.SpeakerId })
             .Select(g => new { g.Key.QuestionId, g.Key.SpeakerId, Points = g.Sum(v => (long)v.Delta) }).ToListAsync(token);
-        var adjustments = await db.ScoreAdjustments.AsNoTracking().GroupBy(v => new { v.QuestionId, v.SpeakerId })
+        var adjustments = await db.ScoreAdjustments.AsNoTracking().Where(v => v.ScoreEpoch == epoch).GroupBy(v => new { v.QuestionId, v.SpeakerId })
             .Select(g => new { g.Key.QuestionId, g.Key.SpeakerId, Points = g.Sum(v => v.Delta) }).ToListAsync(token);
         foreach (var score in votes) data.AddScore(score.QuestionId, score.SpeakerId, score.Points);
         foreach (var score in adjustments) data.AddScore(score.QuestionId, score.SpeakerId, score.Points);
         if (voter.HasValue)
-            data.PersonalPoints = await db.Votes.AsNoTracking().Where(v => v.ParticipantId == voter)
+            data.PersonalPoints = await db.Votes.AsNoTracking().Where(v => v.ParticipantId == voter && v.ScoreEpoch == epoch)
                 .GroupBy(v => v.QuestionId).Select(g => new { Id = g.Key, Points = g.Sum(v => (long)v.Delta) })
                 .ToDictionaryAsync(v => v.Id, v => v.Points, token);
         return data;
@@ -140,7 +141,8 @@ public static class EventViews
         var board = data.Board;
         var people = data.Panellists.Where(p => admin || p.Visible).OrderBy(p => p.SortOrder).ThenBy(p => p.Name)
             .Select(p => new PanellistView(p.Id, p.Name, p.Role, p.Bio, p.Visible, p.SortOrder,
-                p.PhotoRevision is null ? null : $"{(admin ? "/api/admin" : "/api")}/panellists/{p.Id}/photo?v={p.PhotoRevision}")).ToArray();
+                p.PhotoRevision is null ? null : $"{(admin ? "/api/admin" : "/api")}/panellists/{p.Id}/photo?v={p.PhotoRevision}",
+                p.Type)).ToArray();
         var visible = people.Select(p => p.Id).ToHashSet();
         var questions = data.Questions.Where(q => admin || q.Visible).OrderBy(q => q.SortOrder).ThenBy(q => q.Id)
             .Select(q => new QuestionView(q.Id, q.Text, q.Category, q.Visible, q.Answered, q.SortOrder,
@@ -155,10 +157,8 @@ public static class EventViews
         ScoreboardView? scoreboard = null;
         if (admin || board.ScoreboardVisible)
         {
-            var speakers = people.Select(p => (p.Id, p.Name, Removed: false)).ToList();
-            if (admin)
-                speakers.AddRange(data.Scores.Where(s => s.SpeakerId.HasValue).Select(s => s.SpeakerId!.Value)
-                    .Distinct().Where(id => !visible.Contains(id)).Select(id => (id, "Removed speaker", true)));
+            var speakers = people.Where(p => p.Type == "guest")
+                .Select(p => (p.Id, p.Name, Removed: false)).ToList();
             var rows = questions.Select(q => new QuestionScores(q.Id, q.Text,
                 speakers.Select(p => new SpeakerPoints(p.Id,
                     data.Scores.Where(s => s.QuestionId == q.Id && s.SpeakerId == p.Id).Sum(s => s.Points))).ToArray(),

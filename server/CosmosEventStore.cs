@@ -15,6 +15,7 @@ public sealed class PersonalPoints
     public string Id { get; set; } = "";
     public string EventId { get; set; } = "";
     public string Kind { get; set; } = "personal";
+    public long ScoreEpoch { get; set; }
     public Dictionary<Guid, long> Points { get; set; } = [];
 }
 public sealed class EventDocument
@@ -74,7 +75,8 @@ public sealed class CosmosEventStore(ICosmosEventDocuments documents, IEventImag
             var personal = await documents.Personal(voter.Value, token);
             var current = await documents.Read(token);
             if (current.ETag != core.ETag) continue;
-            core.Value.PersonalPoints = personal?.Value.Points ?? [];
+            core.Value.PersonalPoints = personal?.Value.ScoreEpoch == core.Value.Board.ScoreEpoch
+                ? personal.Value.Points : [];
             return core.Value;
         }
         throw new EventUnavailableException("A coherent event snapshot could not be read during concurrent changes.");
@@ -90,7 +92,8 @@ public sealed class CosmosEventStore(ICosmosEventDocuments documents, IEventImag
             var data = core.Value;
             if (revision.HasValue && data.Board.Revision != revision) return new(StoreResults.Conflict(), false);
             var personal = voter.HasValue ? await documents.Personal(voter.Value, token) : null;
-            data.PersonalPoints = personal?.Value.Points ?? [];
+            data.PersonalPoints = personal?.Value.ScoreEpoch == data.Board.ScoreEpoch
+                ? personal.Value.Points : [];
             if (request.HasValue) data.ExistingVote = await documents.Vote(request.Value, token);
             var response = change(data);
             if (response is not null) return new(response, false);
@@ -203,7 +206,7 @@ public sealed class CosmosEventDocuments(Container container, string eventId) : 
         if (commit.Voter.HasValue && commit.Data.NewVotes.Count != 0)
         {
             var personal = new PersonalPoints { Id = $"voter-{commit.Voter:N}",
-                EventId = eventId, Points = commit.Data.PersonalPoints };
+                EventId = eventId, ScoreEpoch = commit.Data.Board.ScoreEpoch, Points = commit.Data.PersonalPoints };
             if (commit.PersonalETag is null) batch.CreateItem(personal);
             else batch.ReplaceItem(personal.Id, personal,
                 new TransactionalBatchItemRequestOptions { IfMatchEtag = commit.PersonalETag });
